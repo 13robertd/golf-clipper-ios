@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Xcode — per-user UI state, breakpoints, schemes, indexes
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Build outputs
+build/
+DerivedData/
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager (not used in V1, but defensive)
+.swiftpm/
+.build/
+Package.resolved
+
+# CocoaPods / Carthage (also not used, defensive)
+Pods/
+Carthage/Build/
+
+# Signing artefacts — these should NEVER be committed
+*.cer
+*.p12
+*.mobileprovision
+*.certSigningRequest
