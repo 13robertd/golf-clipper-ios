@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -28,7 +28,44 @@
 		2B2B2B2B000000000000F013 /* FileManagerHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F013 /* FileManagerHelpers.swift */; };
 		2B2B2B2B000000000000F014 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F014 /* Assets.xcassets */; };
 		2B2B2B2B000000000000F015 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F015 /* Preview Assets.xcassets */; };
+		2B2B2B2B000000000000F016 /* ManualClipFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F016 /* ManualClipFlow.swift */; };
+		2B2B2B2B000000000000F017 /* PhotosDeleteService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F017 /* PhotosDeleteService.swift */; };
+		2B2B2B2B000000000000F018 /* PendingVideoImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F018 /* PendingVideoImport.swift */; };
+		2B2B2B2B000000000000F019 /* ReviewSelectedVideosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F019 /* ReviewSelectedVideosView.swift */; };
+		2B2B2B2B000000000000F01A /* PhotosLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F01A /* PhotosLibraryManager.swift */; };
+		2B2B2B2B000000000000F01B /* VideoThumbnailCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F01B /* VideoThumbnailCell.swift */; };
+		2B2B2B2B000000000000F01C /* PhotosPermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F01C /* PhotosPermissionView.swift */; };
+		2B2B2B2B000000000000F01D /* CustomVideoBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F01D /* CustomVideoBrowserView.swift */; };
+		2B2B2B2B000000000000F01E /* MotionValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F01E /* MotionValidator.swift */; };
+		2B2B2B2B000000000000F01F /* ActionButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F01F /* ActionButtonStyles.swift */; };
+		2B2B2B2B000000000000F020 /* VideoDisplayName.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F020 /* VideoDisplayName.swift */; };
+		2B2B2B2B000000000000F021 /* SourceVideoPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F021 /* SourceVideoPreviewView.swift */; };
+		CC9100912FA73E0F00B808C3 /* NiceShotShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CC9100872FA73E0E00B808C3 /* NiceShotShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CC91008F2FA73E0F00B808C3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8B8B8B8B000000000000F001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CC9100862FA73E0E00B808C3;
+			remoteInfo = NiceShotShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		CC9100922FA73E0F00B808C3 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				CC9100912FA73E0F00B808C3 /* NiceShotShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		1A1A1A1A000000000000F001 /* GolfClipperApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GolfClipperApp.swift; sourceTree = "<group>"; };
@@ -52,11 +89,45 @@
 		1A1A1A1A000000000000F013 /* FileManagerHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileManagerHelpers.swift; sourceTree = "<group>"; };
 		1A1A1A1A000000000000F014 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1A1A1A1A000000000000F015 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F016 /* ManualClipFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualClipFlow.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F017 /* PhotosDeleteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosDeleteService.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F018 /* PendingVideoImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingVideoImport.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F019 /* ReviewSelectedVideosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSelectedVideosView.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F01A /* PhotosLibraryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosLibraryManager.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F01B /* VideoThumbnailCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoThumbnailCell.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F01C /* PhotosPermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosPermissionView.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F01D /* CustomVideoBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomVideoBrowserView.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F01E /* MotionValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionValidator.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F01F /* ActionButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionButtonStyles.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F020 /* VideoDisplayName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoDisplayName.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F021 /* SourceVideoPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceVideoPreviewView.swift; sourceTree = "<group>"; };
 		1A1A1A1A000000000000F099 /* GolfClipper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GolfClipper.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC9100872FA73E0E00B808C3 /* NiceShotShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NiceShotShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		CC9100952FA73E0F00B808C3 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = CC9100862FA73E0E00B808C3 /* NiceShotShare */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		CC9100882FA73E0E00B808C3 /* NiceShotShare */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (CC9100952FA73E0F00B808C3 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = NiceShotShare; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		4D4D4D4D000000000000F002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC9100842FA73E0E00B808C3 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -70,6 +141,7 @@
 			isa = PBXGroup;
 			children = (
 				3C3C3C3C000000000000F002 /* GolfClipper */,
+				CC9100882FA73E0E00B808C3 /* NiceShotShare */,
 				3C3C3C3C000000000000F008 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -95,6 +167,7 @@
 				1A1A1A1A000000000000F003 /* ImportedVideo.swift */,
 				1A1A1A1A000000000000F004 /* SwingClip.swift */,
 				1A1A1A1A000000000000F005 /* DetectionSettings.swift */,
+				1A1A1A1A000000000000F018 /* PendingVideoImport.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -106,6 +179,9 @@
 				1A1A1A1A000000000000F007 /* AudioImpactDetector.swift */,
 				1A1A1A1A000000000000F008 /* ClipExportService.swift */,
 				1A1A1A1A000000000000F009 /* PhotosSaveService.swift */,
+				1A1A1A1A000000000000F017 /* PhotosDeleteService.swift */,
+				1A1A1A1A000000000000F01A /* PhotosLibraryManager.swift */,
+				1A1A1A1A000000000000F01E /* MotionValidator.swift */,
 				1A1A1A1A000000000000F00A /* LocalStorageService.swift */,
 				1A1A1A1A000000000000F00B /* ThumbnailGenerator.swift */,
 			);
@@ -120,7 +196,14 @@
 				1A1A1A1A000000000000F00E /* ClipReviewView.swift */,
 				1A1A1A1A000000000000F00F /* ClipPlayerView.swift */,
 				1A1A1A1A000000000000F010 /* ManualClipView.swift */,
+				1A1A1A1A000000000000F016 /* ManualClipFlow.swift */,
 				1A1A1A1A000000000000F011 /* SettingsDebugView.swift */,
+				1A1A1A1A000000000000F019 /* ReviewSelectedVideosView.swift */,
+				1A1A1A1A000000000000F01B /* VideoThumbnailCell.swift */,
+				1A1A1A1A000000000000F01C /* PhotosPermissionView.swift */,
+				1A1A1A1A000000000000F01D /* CustomVideoBrowserView.swift */,
+				1A1A1A1A000000000000F01F /* ActionButtonStyles.swift */,
+				1A1A1A1A000000000000F021 /* SourceVideoPreviewView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -130,6 +213,7 @@
 			children = (
 				1A1A1A1A000000000000F012 /* TimeFormatter.swift */,
 				1A1A1A1A000000000000F013 /* FileManagerHelpers.swift */,
+				1A1A1A1A000000000000F020 /* VideoDisplayName.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -146,6 +230,7 @@
 			isa = PBXGroup;
 			children = (
 				1A1A1A1A000000000000F099 /* GolfClipper.app */,
+				CC9100872FA73E0E00B808C3 /* NiceShotShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -160,15 +245,39 @@
 				4D4D4D4D000000000000F001 /* Sources */,
 				4D4D4D4D000000000000F002 /* Frameworks */,
 				4D4D4D4D000000000000F003 /* Resources */,
+				CC9100922FA73E0F00B808C3 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				CC9100902FA73E0F00B808C3 /* PBXTargetDependency */,
 			);
 			name = GolfClipper;
 			productName = GolfClipper;
 			productReference = 1A1A1A1A000000000000F099 /* GolfClipper.app */;
 			productType = "com.apple.product-type.application";
+		};
+		CC9100862FA73E0E00B808C3 /* NiceShotShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC9100962FA73E0F00B808C3 /* Build configuration list for PBXNativeTarget "NiceShotShare" */;
+			buildPhases = (
+				CC9100832FA73E0E00B808C3 /* Sources */,
+				CC9100842FA73E0E00B808C3 /* Frameworks */,
+				CC9100852FA73E0E00B808C3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				CC9100882FA73E0E00B808C3 /* NiceShotShare */,
+			);
+			name = NiceShotShare;
+			packageProductDependencies = (
+			);
+			productName = NiceShotShare;
+			productReference = CC9100872FA73E0E00B808C3 /* NiceShotShare.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -177,11 +286,14 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1500;
+				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					7A7A7A7A000000000000F001 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					CC9100862FA73E0E00B808C3 = {
+						CreatedOnToolsVersion = 26.4.1;
 					};
 				};
 			};
@@ -199,6 +311,7 @@
 			projectRoot = "";
 			targets = (
 				7A7A7A7A000000000000F001 /* GolfClipper */,
+				CC9100862FA73E0E00B808C3 /* NiceShotShare */,
 			);
 		};
 /* End PBXProject section */
@@ -213,6 +326,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CC9100852FA73E0E00B808C3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -224,11 +344,15 @@
 				2B2B2B2B000000000000F002 /* AppState.swift in Sources */,
 				2B2B2B2B000000000000F003 /* ImportedVideo.swift in Sources */,
 				2B2B2B2B000000000000F004 /* SwingClip.swift in Sources */,
+				2B2B2B2B000000000000F018 /* PendingVideoImport.swift in Sources */,
 				2B2B2B2B000000000000F005 /* DetectionSettings.swift in Sources */,
 				2B2B2B2B000000000000F006 /* VideoImportService.swift in Sources */,
 				2B2B2B2B000000000000F007 /* AudioImpactDetector.swift in Sources */,
 				2B2B2B2B000000000000F008 /* ClipExportService.swift in Sources */,
 				2B2B2B2B000000000000F009 /* PhotosSaveService.swift in Sources */,
+				2B2B2B2B000000000000F017 /* PhotosDeleteService.swift in Sources */,
+				2B2B2B2B000000000000F01A /* PhotosLibraryManager.swift in Sources */,
+				2B2B2B2B000000000000F01E /* MotionValidator.swift in Sources */,
 				2B2B2B2B000000000000F00A /* LocalStorageService.swift in Sources */,
 				2B2B2B2B000000000000F00B /* ThumbnailGenerator.swift in Sources */,
 				2B2B2B2B000000000000F00C /* HomeView.swift in Sources */,
@@ -236,13 +360,36 @@
 				2B2B2B2B000000000000F00E /* ClipReviewView.swift in Sources */,
 				2B2B2B2B000000000000F00F /* ClipPlayerView.swift in Sources */,
 				2B2B2B2B000000000000F010 /* ManualClipView.swift in Sources */,
+				2B2B2B2B000000000000F016 /* ManualClipFlow.swift in Sources */,
 				2B2B2B2B000000000000F011 /* SettingsDebugView.swift in Sources */,
+				2B2B2B2B000000000000F019 /* ReviewSelectedVideosView.swift in Sources */,
+				2B2B2B2B000000000000F01B /* VideoThumbnailCell.swift in Sources */,
+				2B2B2B2B000000000000F01C /* PhotosPermissionView.swift in Sources */,
+				2B2B2B2B000000000000F01D /* CustomVideoBrowserView.swift in Sources */,
+				2B2B2B2B000000000000F01F /* ActionButtonStyles.swift in Sources */,
+				2B2B2B2B000000000000F020 /* VideoDisplayName.swift in Sources */,
+				2B2B2B2B000000000000F021 /* SourceVideoPreviewView.swift in Sources */,
 				2B2B2B2B000000000000F012 /* TimeFormatter.swift in Sources */,
 				2B2B2B2B000000000000F013 /* FileManagerHelpers.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CC9100832FA73E0E00B808C3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		CC9100902FA73E0F00B808C3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CC9100862FA73E0E00B808C3 /* NiceShotShare */;
+			targetProxy = CC91008F2FA73E0F00B808C3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		5E5E5E5E000000000000F001 /* Debug */ = {
@@ -375,8 +522,9 @@
 				DEVELOPMENT_TEAM = KG6JZ5H8KT;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Nice Shot";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your golf clips back to your Photos library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a golf video from your Photos library to clip swings.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a golf video from your Photos library, and optionally delete the original after your clips are saved.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -406,8 +554,9 @@
 				DEVELOPMENT_TEAM = KG6JZ5H8KT;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Nice Shot";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your golf clips back to your Photos library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a golf video from your Photos library to clip swings.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a golf video from your Photos library, and optionally delete the original after your clips are saved.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -421,6 +570,64 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.robertdeng.golfclipper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CC9100932FA73E0F00B808C3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KG6JZ5H8KT;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NiceShotShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NiceShotShare;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.robertdeng.golfclipper.NiceShotShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		CC9100942FA73E0F00B808C3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = KG6JZ5H8KT;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NiceShotShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NiceShotShare;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.robertdeng.golfclipper.NiceShotShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -443,6 +650,15 @@
 			buildConfigurations = (
 				5E5E5E5E000000000000F003 /* Debug */,
 				5E5E5E5E000000000000F004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CC9100962FA73E0F00B808C3 /* Build configuration list for PBXNativeTarget "NiceShotShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC9100932FA73E0F00B808C3 /* Debug */,
+				CC9100942FA73E0F00B808C3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

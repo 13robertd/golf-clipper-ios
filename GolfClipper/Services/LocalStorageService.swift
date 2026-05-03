@@ -1,22 +1,37 @@
 // LocalStorageService.swift
 // Tiny JSON-on-disk persistence layer. Avoids SwiftData complexity for V1.
-// We store three small files in Documents:
-//   - imported_video.json   (the most-recent imported video metadata)
-//   - clips.json            (array of SwingClip metadata)
-//   - settings.json         (DetectionSettings)
+//
+// V1.5 changes:
+//  - The single `imported_video.json` becomes a list at `imported_videos.json`.
+//  - On first launch after upgrade, we migrate the old single record into
+//    a one-element array so the user doesn't lose their imported video.
+//
+// Files in Documents:
+//   - imported_videos.json   (array of ImportedVideo metadata)
+//   - clips.json             (array of SwingClip metadata)
+//   - settings.json          (DetectionSettings)
 
 import Foundation
 
 final class LocalStorageService {
     static let shared = LocalStorageService()
 
-    private let videoFilename = "imported_video.json"
+    // Current filenames (V1.5+).
+    private let videosFilename = "imported_videos.json"
     private let clipsFilename = "clips.json"
     private let settingsFilename = "settings.json"
 
-    private var videoURL: URL { FileManagerHelpers.documentsDirectory.appendingPathComponent(videoFilename) }
-    private var clipsURL: URL { FileManagerHelpers.documentsDirectory.appendingPathComponent(clipsFilename) }
-    private var settingsURL: URL { FileManagerHelpers.documentsDirectory.appendingPathComponent(settingsFilename) }
+    // Legacy filename (V1) — read on first launch then deleted.
+    private let legacyVideoFilename = "imported_video.json"
+
+    private var videosURL:        URL { docs(videosFilename) }
+    private var clipsURL:         URL { docs(clipsFilename) }
+    private var settingsURL:      URL { docs(settingsFilename) }
+    private var legacyVideoURL:   URL { docs(legacyVideoFilename) }
+
+    private func docs(_ name: String) -> URL {
+        FileManagerHelpers.documentsDirectory.appendingPathComponent(name)
+    }
 
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -31,20 +46,30 @@ final class LocalStorageService {
         return d
     }()
 
-    // MARK: - ImportedVideo
+    // MARK: - ImportedVideos
 
-    func loadVideo() -> ImportedVideo? {
-        guard let data = try? Data(contentsOf: videoURL) else { return nil }
-        return try? decoder.decode(ImportedVideo.self, from: data)
+    /// Load the list of imported videos. If the new file is missing but the
+    /// legacy V1 single-video file exists, migrate it into a one-element list.
+    func loadVideos() -> [ImportedVideo] {
+        if let data = try? Data(contentsOf: videosURL),
+           let videos = try? decoder.decode([ImportedVideo].self, from: data) {
+            return videos
+        }
+        // Legacy migration: V1 stored a single video.
+        if let data = try? Data(contentsOf: legacyVideoURL),
+           let video = try? decoder.decode(ImportedVideo.self, from: data) {
+            return [video]
+        }
+        return []
     }
 
-    func saveVideo(_ video: ImportedVideo?) {
-        guard let video else {
-            try? FileManager.default.removeItem(at: videoURL)
-            return
+    func saveVideos(_ videos: [ImportedVideo]) {
+        if let data = try? encoder.encode(videos) {
+            try? data.write(to: videosURL, options: .atomic)
         }
-        if let data = try? encoder.encode(video) {
-            try? data.write(to: videoURL, options: .atomic)
+        // Best-effort: clean up the legacy file once we've taken ownership.
+        if FileManager.default.fileExists(atPath: legacyVideoURL.path) {
+            try? FileManager.default.removeItem(at: legacyVideoURL)
         }
     }
 

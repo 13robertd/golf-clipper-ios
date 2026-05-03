@@ -1,5 +1,10 @@
 // ClipPlayerView.swift
-// Plays a single clip and lets the user save it to Photos or delete it.
+// Plays a single clip. V1.7 simplifies the action area: a single
+// Save-to-Photos button (or a "Saved to Photos" status pill once it's
+// already in Photos), and a subtle "Remove Clip" text link at the
+// bottom. We renamed Delete → Remove Clip so users don't confuse
+// removing a clip from the app with deleting the original from Photos.
+// V4 — both buttons now use the shared ActionButtonStyles tier system.
 
 import SwiftUI
 import AVKit
@@ -42,6 +47,9 @@ struct ClipPlayerView: View {
         .padding(.horizontal)
     }
 
+    /// Trimmed in V1.7: no more "Saved to Photos" line here — that
+    /// information is now part of the action area below so there's
+    /// exactly one place to look.
     private var details: some View {
         VStack(spacing: 4) {
             Text("Impact at \(TimeFormatter.mmssTenths(clip.impactTimestamp))")
@@ -49,49 +57,64 @@ struct ClipPlayerView: View {
             Text("Length \(TimeFormatter.seconds(clip.duration)) • \(TimeFormatter.mmssTenths(clip.startTime)) → \(TimeFormatter.mmssTenths(clip.endTime))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if clip.isSavedToPhotos {
-                Label("Saved to Photos", systemImage: "checkmark.circle.fill")
-                    .font(.caption).foregroundStyle(.green)
-            }
         }
         .padding(.horizontal)
     }
 
+    /// V1.7 action area:
+    ///   • Saved to Photos? → green status pill (no button)
+    ///   • Not saved?       → green Save to Photos button
+    /// + "Remove Clip" subtle text link below.
     private var actions: some View {
-        HStack(spacing: 12) {
-            Button(role: .destructive) {
-                app.deleteClip(clip)
-                dismiss()
-            } label: {
-                Label("Delete", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.red.opacity(0.1))
-                    .foregroundStyle(.red)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+        VStack(spacing: 14) {
+            if clip.isSavedToPhotos {
+                savedPill
+            } else {
+                saveButton
             }
-            Button {
-                Task {
-                    isSaving = true
-                    await app.saveClipToPhotos(clip)
-                    isSaving = false
-                }
-            } label: {
-                Group {
-                    if isSaving {
-                        ProgressView()
-                    } else {
-                        Label("Save to Photos", systemImage: "square.and.arrow.up")
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.green)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .disabled(isSaving)
+            removeClipLink
         }
         .padding(.horizontal)
+    }
+
+    private var savedPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+            Text("Saved to Photos")
+        }
+        .font(.headline)
+        .foregroundStyle(.green)
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color.green.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var saveButton: some View {
+        Button {
+            Task {
+                isSaving = true
+                await app.saveClipToPhotos(clip)
+                isSaving = false
+            }
+        } label: {
+            if isSaving {
+                ProgressView()
+                    .tint(.white)
+            } else {
+                Label("Save to Photos", systemImage: ActionIcon.save)
+            }
+        }
+        .buttonStyle(.saveAction)
+        .disabled(isSaving)
+    }
+
+    private var removeClipLink: some View {
+        Button("Remove Clip") {
+            app.deleteClip(clip)
+            dismiss()
+        }
+        .buttonStyle(.removeAction)
+        .accessibilityLabel("Remove clip from this app")
     }
 }

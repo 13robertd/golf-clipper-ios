@@ -1,7 +1,11 @@
 // ManualClipView.swift
 // Plays the original imported video so the user can scrub to the impact
-// frame and create a clip there. This is the fallback for swings that
+// frame and create a clip there. This is the fallback for shots that
 // audio detection misses (or when the video has no audio at all).
+//
+// V1.5: this view is always presented inside `ManualClipFlow`, which owns
+// the NavigationStack and Done button — so this view just declares its
+// title and content.
 
 import SwiftUI
 import AVKit
@@ -9,7 +13,6 @@ import AVFoundation
 
 struct ManualClipView: View {
     @EnvironmentObject var app: AppState
-    @Environment(\.dismiss) private var dismiss
     let video: ImportedVideo
 
     @State private var player: AVPlayer
@@ -24,92 +27,85 @@ struct ManualClipView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                VideoPlayer(player: player)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                    .frame(maxHeight: .infinity)
+        VStack(spacing: 16) {
+            VideoPlayer(player: player)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+                .frame(maxHeight: .infinity)
 
-                VStack(spacing: 8) {
-                    Text("Tap → to scrub to the impact moment, then tap Create Clip Here.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-
-                    HStack {
-                        Text(TimeFormatter.mmssTenths(currentTime))
-                        Spacer()
-                        Text(TimeFormatter.mmss(video.duration))
-                    }
-                    .font(.caption.monospacedDigit())
+            VStack(spacing: 8) {
+                Text("Tap → to scrub to the impact moment, then tap Create Clip Here.")
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
-                    Slider(value: Binding(
-                        get: { currentTime },
-                        set: { newValue in
-                            currentTime = newValue
-                            player.seek(to: CMTime(seconds: newValue, preferredTimescale: 600),
-                                        toleranceBefore: .zero, toleranceAfter: .zero)
-                        }),
-                        in: 0...max(video.duration, 0.1))
-                    .padding(.horizontal)
-
-                    HStack(spacing: 10) {
-                        nudgeButton(label: "−1s", delta: -1)
-                        nudgeButton(label: "−0.1s", delta: -0.1)
-                        nudgeButton(label: "+0.1s", delta: 0.1)
-                        nudgeButton(label: "+1s", delta: 1)
-                    }
-                    .padding(.horizontal)
+                HStack {
+                    Text(TimeFormatter.mmssTenths(currentTime))
+                    Spacer()
+                    Text(TimeFormatter.mmss(video.duration))
                 }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
 
-                Button {
-                    Task {
-                        isCreating = true
-                        statusMessage = nil
-                        await app.createManualClip(atTime: currentTime)
-                        isCreating = false
-                        if app.errorMessage == nil {
-                            statusMessage = "Clip created at \(TimeFormatter.mmssTenths(currentTime))."
-                        }
-                    }
-                } label: {
-                    Group {
-                        if isCreating {
-                            ProgressView()
-                        } else {
-                            Label("Create Clip Here", systemImage: "scissors")
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                Slider(value: Binding(
+                    get: { currentTime },
+                    set: { newValue in
+                        currentTime = newValue
+                        player.seek(to: CMTime(seconds: newValue, preferredTimescale: 600),
+                                    toleranceBefore: .zero, toleranceAfter: .zero)
+                    }),
+                    in: 0...max(video.duration, 0.1))
+                .padding(.horizontal)
+
+                HStack(spacing: 10) {
+                    nudgeButton(label: "−1s", delta: -1)
+                    nudgeButton(label: "−0.1s", delta: -0.1)
+                    nudgeButton(label: "+0.1s", delta: 0.1)
+                    nudgeButton(label: "+1s", delta: 1)
                 }
                 .padding(.horizontal)
-                .disabled(isCreating)
+            }
 
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.green)
+            Button {
+                Task {
+                    isCreating = true
+                    statusMessage = nil
+                    await app.createManualClip(forVideo: video, atTime: currentTime)
+                    isCreating = false
+                    if app.errorMessage == nil {
+                        statusMessage = "Clip created at \(TimeFormatter.mmssTenths(currentTime))."
+                    }
                 }
-            }
-            .padding(.bottom)
-            .navigationTitle("Manual Clip")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
+            } label: {
+                Group {
+                    if isCreating {
+                        ProgressView()
+                    } else {
+                        Label("Create Clip Here", systemImage: "scissors")
+                    }
                 }
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.green)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            .onAppear { startObservingTime() }
-            .onDisappear { stopObservingTime() }
+            .padding(.horizontal)
+            .disabled(isCreating)
+
+            if let statusMessage {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
         }
+        .padding(.bottom)
+        .navigationTitle("Manual Clip")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { startObservingTime() }
+        .onDisappear { stopObservingTime() }
     }
 
     private func nudgeButton(label: String, delta: Double) -> some View {

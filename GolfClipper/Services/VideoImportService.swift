@@ -1,64 +1,94 @@
 // VideoImportService.swift
-// Handles copying a user-picked video out of Photos and into our app's
-// Documents directory so we can read its audio and export clips.
+// Copies a user-picked video from the Photos library into our app's
+// Documents directory so the rest of the pipeline can read it.
 //
-// We use PhotosUI's PhotosPickerItem (iOS 16+) which gives us a Transferable
-// we can load as a file URL. We then copy the file into our videos folder.
+// V2 — replaces the PhotosPicker / PhotosPickerItem path. We now go
+// directly through the Photos framework using a PHAsset local
+// identifier. `PHAssetResourceManager.writeData` streams the original
+// video file to a destination URL we control. iCloud-only assets are
+// downloaded automatically (`isNetworkAccessAllowed = true`).
 
 import Foundation
-import PhotosUI
 import AVFoundation
-import SwiftUI
-import UniformTypeIdentifiers
-import CoreTransferable
+import Photos
 
 enum VideoImportError: LocalizedError {
     case loadFailed
-    case copyFailed
+    case copyFailed(String)
     case unsupportedItem
     case noDuration
 
     var errorDescription: String? {
         switch self {
-        case .loadFailed:     return "Could not load the selected video."
-        case .copyFailed:     return "Could not copy the video into the app."
-        case .unsupportedItem:return "That item is not a supported video."
-        case .noDuration:     return "Could not read the video's duration."
+        case .loadFailed:           return "Could not load the selected video."
+        case .copyFailed(let why):  return "Could not copy the video: \(why)."
+        case .unsupportedItem:      return "That item is not a supported video."
+        case .noDuration:           return "Could not read the video's duration."
         }
     }
 }
 
 final class VideoImportService {
 
-    /// Imports a video from a PhotosPickerItem.
-    /// - Returns: An ImportedVideo whose file is now stored in Documents.
-    func importVideo(from item: PhotosPickerItem) async throws -> ImportedVideo {
-        // 1. Get a temporary URL for the picked item.
-        guard let tempURL = try await loadVideoURL(from: item) else {
+    /// Imports a video by Photos asset local identifier.
+    /// - Returns: an ImportedVideo whose file lives in Documents.
+    func importVideo(fromAssetIdentifier identifier: String) async throws -> ImportedVideo {
+        // 1. Locate the PHAsset.
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard let asset = assets.firstObject else {
             throw VideoImportError.unsupportedItem
         }
 
-        // 2. Copy that file into our own Documents/ImportedVideos folder.
-        //    PhotosUI's URL is in a temp sandbox and may disappear.
+        // 2. Find the video resource. (One PHAsset can have multiple
+        //    resources — full video, paired image, slow-mo metadata —
+        //    and we want the canonical .video one.)
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let videoResource = resources.first(where: { $0.type == .video })
+                ?? resources.first(where: { $0.type == .fullSizeVideo })
+                ?? resources.first
+        else {
+            throw VideoImportError.unsupportedItem
+        }
+
+        // 3. Build a destination URL inside Documents/ImportedVideos.
         let videosFolder = FileManagerHelpers.videosFolderURL
-        let originalName = tempURL.lastPathComponent
+        let originalName = videoResource.originalFilename
         let safeName = "\(UUID().uuidString)_\(originalName)"
         let destURL = videosFolder.appendingPathComponent(safeName)
 
-        do {
-            if FileManager.default.fileExists(atPath: destURL.path) {
-                try FileManager.default.removeItem(at: destURL)
-            }
-            try FileManager.default.copyItem(at: tempURL, to: destURL)
-        } catch {
-            throw VideoImportError.copyFailed
+        if FileManager.default.fileExists(atPath: destURL.path) {
+            try? FileManager.default.removeItem(at: destURL)
         }
 
-        // 3. Read duration with AVFoundation.
-        let asset = AVURLAsset(url: destURL)
+        // 4. Copy the original video data. iCloud Photos may need to
+        //    download first — that's why isNetworkAccessAllowed=true.
+        let opts = PHAssetResourceRequestOptions()
+        opts.isNetworkAccessAllowed = true
+
+        do {
+            try await withCheckedThrowingContinuation {
+                (cont: CheckedContinuation<Void, Error>) in
+                PHAssetResourceManager.default().writeData(
+                    for: videoResource,
+                    toFile: destURL,
+                    options: opts
+                ) { error in
+                    if let error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume()
+                    }
+                }
+            }
+        } catch {
+            throw VideoImportError.copyFailed(error.localizedDescription)
+        }
+
+        // 5. Read duration via AVFoundation.
+        let avAsset = AVURLAsset(url: destURL)
         let duration: Double
         do {
-            let cm = try await asset.load(.duration)
+            let cm = try await avAsset.load(.duration)
             duration = CMTimeGetSeconds(cm)
         } catch {
             throw VideoImportError.noDuration
@@ -67,14 +97,23 @@ final class VideoImportService {
             throw VideoImportError.noDuration
         }
 
-        // 4. Build and return the model. We persist a relative path so the
-        //    record survives sandbox path changes.
+        // 6. File size on disk (motivates the cleanup banner).
+        let fileSizeBytes: Int64? = {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: destURL.path),
+                  let n = attrs[.size] as? NSNumber else { return nil }
+            return n.int64Value
+        }()
+
+        // 7. Build the model. Asset identifier is preserved so the
+        //    cleanup banner can later offer to delete the original.
         let relPath = FileManagerHelpers.relativePath(for: destURL)
         return ImportedVideo(
             originalFilename: originalName,
             relativePath: relPath,
             importedAt: Date(),
-            duration: duration
+            duration: duration,
+            originalAssetIdentifier: identifier,
+            fileSizeBytes: fileSizeBytes
         )
     }
 
@@ -86,41 +125,6 @@ final class VideoImportService {
             return !tracks.isEmpty
         } catch {
             return false
-        }
-    }
-
-    // MARK: - Private
-
-    /// Use Transferable to get a file URL for the picked item.
-    /// We use a small wrapper so we control where the temp file lives.
-    private func loadVideoURL(from item: PhotosPickerItem) async throws -> URL? {
-        do {
-            let movie: VideoFile? = try await item.loadTransferable(type: VideoFile.self)
-            return movie?.url
-        } catch {
-            throw VideoImportError.loadFailed
-        }
-    }
-}
-
-/// Transferable wrapper that copies the imported video to a temp file we own.
-/// Required because PhotosPickerItem.loadTransferable(type: URL.self) returns
-/// a URL that can disappear before we use it.
-struct VideoFile: Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(contentType: .movie) { videoFile in
-            SentTransferredFile(videoFile.url)
-        } importing: { received in
-            // Copy received.file into a temp directory that we control.
-            let tempDir = FileManager.default.temporaryDirectory
-            let tempURL = tempDir.appendingPathComponent("import_\(UUID().uuidString).mov")
-            if FileManager.default.fileExists(atPath: tempURL.path) {
-                try FileManager.default.removeItem(at: tempURL)
-            }
-            try FileManager.default.copyItem(at: received.file, to: tempURL)
-            return VideoFile(url: tempURL)
         }
     }
 }
