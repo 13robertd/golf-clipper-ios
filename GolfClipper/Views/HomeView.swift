@@ -177,6 +177,25 @@ struct HomeView: View {
             } message: {
                 Text(app.errorMessage ?? "")
             }
+            // V6 — auto-present the Analysis sheet for shared-import
+            // batches kicked off from GolfClipperApp's scenePhase
+            // observer. The Photos-picker flow already sets showAnalysis
+            // before importVideos runs, so this onChange is a no-op for
+            // that path. Only fires the sheet if the user isn't already
+            // somewhere else (sheet stacking is silently dropped by
+            // SwiftUI, so we'd lose the sheet otherwise).
+            .onChange(of: app.batchState) { _, newState in
+                if case .running = newState,
+                   !showAnalysis,
+                   !showCustomBrowser,
+                   !showVideoReview,
+                   !showReview,
+                   !showManualClip,
+                   !showSettings,
+                   sourceVideoPreviewTarget == nil {
+                    showAnalysis = true
+                }
+            }
         }
     }
 

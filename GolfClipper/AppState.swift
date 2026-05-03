@@ -16,6 +16,8 @@
 
 import Foundation
 import SwiftUI
+import AVFoundation
+import Photos
 
 // MARK: - Batch state types
 
@@ -270,6 +272,268 @@ final class AppState: ObservableObject {
             results: perVideoResults
         )
         batchState = .completed(summary)
+    }
+
+    // MARK: - Shared-container import (V6 — Share Extension handoff)
+
+    /// Pulls anything the NiceShotShare extension dropped into the App
+    /// Group's `pending/` directory into the regular import pipeline.
+    /// Called from `GolfClipperApp` on launch + on every foreground
+    /// transition. No-ops if there's nothing pending or if a batch is
+    /// already running (in which case the next foreground will retry).
+    ///
+    /// V6.1 — descriptor-based handoff. The extension writes a small
+    /// JSON descriptor naming either a PHAsset identifier (fast path)
+    /// or a copied video file (slow fallback). Asset descriptors reuse
+    /// the existing `VideoImportService.importVideo(fromAssetIdentifier:)`
+    /// — same code path the in-app browser uses, so the audio detection,
+    /// motion validation, and clip export are byte-for-byte identical.
+    /// File descriptors use the V6 fallback path that moves directly
+    /// from the App Group into Documents.
+    func importPendingSharedVideos() async {
+        // V6.4 diagnostic — fires on EVERY foreground tick so the user
+        // can confirm App Group reachability without a special build.
+        // If `container=<nil>`, the App Group entitlement isn't actually
+        // active in the runtime profile (likely Personal Team blocking
+        // it) and nothing the extension writes can be read here.
+        let containerStr = SharedContainerImporter.containerURL?.path ?? "<nil>"
+        let pendingDirStr = SharedContainerImporter.pendingDirectoryURL?.path ?? "<nil>"
+        let earlyDescriptors = SharedContainerImporter.pendingDescriptors()
+        NSLog("[NiceShot] AppGroup diag | container=\(containerStr) | pendingDir=\(pendingDirStr) | descriptors=\(earlyDescriptors.count)")
+
+        // Don't interrupt an in-flight batch. The pending files stay put;
+        // we'll come back for them on the next foreground tick.
+        if case .running = batchState { return }
+
+        let descriptors = earlyDescriptors
+        guard !descriptors.isEmpty else { return }
+
+        errorMessage = nil
+        let batchId = UUID()
+        var progress = BatchProgress(total: descriptors.count)
+        batchState = .running(progress)
+
+        var perVideoResults: [BatchSummary.VideoResult] = []
+        var totalClipsCreated = 0
+        var failedCount = 0
+
+        for (idx, descriptor) in descriptors.enumerated() {
+            progress.currentIndex = idx + 1
+            progress.currentFilename = descriptor.filename
+            progress.currentStatus = .importing
+            batchState = .running(progress)
+
+            // --- Step A: produce an ImportedVideo from the descriptor. ---
+            // For asset / filename descriptors we reuse the same
+            // VideoImportService method the in-app browser calls — the
+            // heavy iCloud download happens here, in the main app, with
+            // the analysis sheet already showing progress.
+            let importedVideo: ImportedVideo
+            do {
+                switch descriptor.kind {
+                case .filename(let name):
+                    // V6.2 — extension shipped only the filename. Look
+                    // up the matching PHAsset on a background queue
+                    // (the lookup involves per-asset metadata fetches
+                    // that Photos warns about doing on main).
+                    guard let identifier = await Self.findAssetIdentifier(matching: name) else {
+                        throw NSError(domain: "SharedImport", code: 2,
+                                      userInfo: [NSLocalizedDescriptionKey: "Couldn't find a matching video in Photos for '\(name)'. Try sharing again or use the in-app picker."])
+                    }
+                    var v = try await importer.importVideo(fromAssetIdentifier: identifier)
+                    v.batchId = batchId
+                    v.processingStatus = .importing
+                    importedVideo = v
+                case .asset(let identifier):
+                    var v = try await importer.importVideo(fromAssetIdentifier: identifier)
+                    v.batchId = batchId
+                    v.processingStatus = .importing
+                    importedVideo = v
+                case .file(let url):
+                    importedVideo = try await ingestSharedVideo(at: url,
+                                                                batchId: batchId)
+                }
+            } catch {
+                failedCount += 1
+                progress.failedCount += 1
+                batchState = .running(progress)
+                perVideoResults.append(.init(
+                    videoId: UUID(),
+                    filename: descriptor.filename,
+                    status: .failed,
+                    clipCount: 0,
+                    errorMessage: error.localizedDescription
+                ))
+                // Even on failure, drop the descriptor so we don't
+                // infinitely retry a corrupt entry every foreground.
+                SharedContainerImporter.cleanup(descriptor)
+                continue
+            }
+
+            self.importedVideos.append(importedVideo)
+            storage.saveVideos(self.importedVideos)
+            progress.currentFilename = importedVideo.originalFilename
+
+            // Successfully ingested — remove the descriptor now so a
+            // crash mid-pipeline doesn't cause a duplicate import next
+            // launch. (For asset descriptors the original Photos asset
+            // is unchanged; for file descriptors the inline copy is
+            // deleted by cleanup().)
+            SharedContainerImporter.cleanup(descriptor)
+
+            // --- Step B: process the rest of the pipeline. ---
+            let outcome = await processVideo(importedVideo) { newStatus in
+                self.updateVideoStatus(id: importedVideo.id, status: newStatus, errorMessage: nil)
+                progress.currentStatus = newStatus
+                self.batchState = .running(progress)
+            }
+
+            switch outcome {
+            case .success(let clipsAdded):
+                progress.clipsCreated += clipsAdded
+                totalClipsCreated += clipsAdded
+                batchState = .running(progress)
+                self.updateVideoStatus(id: importedVideo.id, status: .completed, errorMessage: nil)
+                perVideoResults.append(.init(
+                    videoId: importedVideo.id,
+                    filename: importedVideo.originalFilename,
+                    status: .completed,
+                    clipCount: clipsAdded,
+                    errorMessage: nil
+                ))
+            case .noAudio:
+                self.updateVideoStatus(id: importedVideo.id, status: .noAudio,
+                                       errorMessage: "No audio track")
+                perVideoResults.append(.init(
+                    videoId: importedVideo.id,
+                    filename: importedVideo.originalFilename,
+                    status: .noAudio,
+                    clipCount: 0,
+                    errorMessage: "No audio track"
+                ))
+            case .noShots:
+                self.updateVideoStatus(id: importedVideo.id, status: .noShotsFound, errorMessage: nil)
+                perVideoResults.append(.init(
+                    videoId: importedVideo.id,
+                    filename: importedVideo.originalFilename,
+                    status: .noShotsFound,
+                    clipCount: 0,
+                    errorMessage: nil
+                ))
+            case .failure(let err):
+                failedCount += 1
+                progress.failedCount += 1
+                batchState = .running(progress)
+                self.updateVideoStatus(id: importedVideo.id, status: .failed,
+                                       errorMessage: err.localizedDescription)
+                perVideoResults.append(.init(
+                    videoId: importedVideo.id,
+                    filename: importedVideo.originalFilename,
+                    status: .failed,
+                    clipCount: 0,
+                    errorMessage: err.localizedDescription
+                ))
+            }
+        }
+
+        let summary = BatchSummary(
+            total: descriptors.count,
+            processed: descriptors.count - failedCount,
+            failed: failedCount,
+            totalClipsCreated: totalClipsCreated,
+            results: perVideoResults
+        )
+        batchState = .completed(summary)
+    }
+
+    /// V6.2 — Resolve a Photos suggestedName to a PHAsset localIdentifier.
+    /// Runs on a detached `Task` so the per-asset metadata fetches (which
+    /// Photos warns about on the main queue) happen off the UI thread.
+    /// Capped at 250 most-recent videos: real-world shares are nearly
+    /// always recent, and the cap bounds worst-case latency on libraries
+    /// with thousands of clips.
+    static func findAssetIdentifier(matching filename: String) async -> String? {
+        guard !filename.isEmpty else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            let result = PHAsset.fetchAssets(with: .video, options: options)
+            var found: String?
+            let maxScan = 250
+            result.enumerateObjects { asset, idx, stop in
+                if idx >= maxScan {
+                    stop.pointee = true
+                    return
+                }
+                let resources = PHAssetResource.assetResources(for: asset)
+                if resources.contains(where: { $0.originalFilename == filename }) {
+                    found = asset.localIdentifier
+                    stop.pointee = true
+                }
+            }
+            return found
+        }.value
+    }
+
+    /// Move a video out of the App Group `pending/` directory into the
+    /// app's Documents/ImportedVideos folder, capture file metadata, and
+    /// return a fresh ImportedVideo record. No PHAsset identifier is
+    /// available for shared imports — the cleanup banner will see this
+    /// as `originalAssetIdentifier == nil` and quietly hide the
+    /// "Delete Original from Photos" affordance, which is correct.
+    private func ingestSharedVideo(at sourceURL: URL,
+                                   batchId: UUID) async throws -> ImportedVideo {
+        // Strip the Share Extension's UUID prefix (added to avoid pending
+        // collisions); the user-facing displayName is date-derived anyway,
+        // so there's no value carrying it through.
+        let sourceName = sourceURL.lastPathComponent
+        let originalName: String = {
+            // Pattern: "<UUID>_<originalFilename>"
+            if let underscoreIdx = sourceName.firstIndex(of: "_") {
+                return String(sourceName[sourceName.index(after: underscoreIdx)...])
+            }
+            return sourceName
+        }()
+
+        let videosFolder = FileManagerHelpers.videosFolderURL
+        let safeName = "\(UUID().uuidString)_\(originalName)"
+        let destURL = videosFolder.appendingPathComponent(safeName)
+
+        do {
+            try FileManager.default.moveItem(at: sourceURL, to: destURL)
+        } catch {
+            // Fall back to copy + delete in case the App Group container
+            // and Documents are on a boundary that doesn't allow rename.
+            try FileManager.default.copyItem(at: sourceURL, to: destURL)
+            try? FileManager.default.removeItem(at: sourceURL)
+        }
+
+        let asset = AVURLAsset(url: destURL)
+        let cm = try await asset.load(.duration)
+        let duration = CMTimeGetSeconds(cm)
+        guard duration.isFinite, duration > 0 else {
+            try? FileManager.default.removeItem(at: destURL)
+            throw NSError(domain: "SharedImport", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not read video duration"])
+        }
+
+        let fileSizeBytes: Int64? = {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: destURL.path),
+                  let n = attrs[.size] as? NSNumber else { return nil }
+            return n.int64Value
+        }()
+
+        let relPath = FileManagerHelpers.relativePath(for: destURL)
+        return ImportedVideo(
+            originalFilename: originalName,
+            relativePath: relPath,
+            importedAt: Date(),
+            duration: duration,
+            batchId: batchId,
+            processingStatus: .importing,
+            originalAssetIdentifier: nil,    // V6 — no Photos reference for shared imports
+            fileSizeBytes: fileSizeBytes
+        )
     }
 
     // MARK: - Per-video pipeline
