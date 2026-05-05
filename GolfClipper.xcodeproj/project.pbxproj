@@ -41,6 +41,7 @@
 		2B2B2B2B000000000000F020 /* VideoDisplayName.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F020 /* VideoDisplayName.swift */; };
 		2B2B2B2B000000000000F021 /* SourceVideoPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F021 /* SourceVideoPreviewView.swift */; };
 		2B2B2B2B000000000000F022 /* SharedContainerImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F022 /* SharedContainerImporter.swift */; };
+		2B2B2B2B000000000000F023 /* DetectionConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1A1A1A000000000000F023 /* DetectionConstants.swift */; };
 		CC9100912FA73E0F00B808C3 /* NiceShotShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CC9100872FA73E0E00B808C3 /* NiceShotShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -103,6 +104,7 @@
 		1A1A1A1A000000000000F020 /* VideoDisplayName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoDisplayName.swift; sourceTree = "<group>"; };
 		1A1A1A1A000000000000F021 /* SourceVideoPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceVideoPreviewView.swift; sourceTree = "<group>"; };
 		1A1A1A1A000000000000F022 /* SharedContainerImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedContainerImporter.swift; sourceTree = "<group>"; };
+		1A1A1A1A000000000000F023 /* DetectionConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetectionConstants.swift; sourceTree = "<group>"; };
 		1A1A1A1A000000000000F099 /* GolfClipper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GolfClipper.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC9100872FA73E0E00B808C3 /* NiceShotShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NiceShotShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -170,6 +172,7 @@
 				1A1A1A1A000000000000F004 /* SwingClip.swift */,
 				1A1A1A1A000000000000F005 /* DetectionSettings.swift */,
 				1A1A1A1A000000000000F018 /* PendingVideoImport.swift */,
+				1A1A1A1A000000000000F023 /* DetectionConstants.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -359,6 +362,7 @@
 				2B2B2B2B000000000000F00A /* LocalStorageService.swift in Sources */,
 				2B2B2B2B000000000000F00B /* ThumbnailGenerator.swift in Sources */,
 				2B2B2B2B000000000000F022 /* SharedContainerImporter.swift in Sources */,
+				2B2B2B2B000000000000F023 /* DetectionConstants.swift in Sources */,
 				2B2B2B2B000000000000F00C /* HomeView.swift in Sources */,
 				2B2B2B2B000000000000F00D /* VideoAnalysisView.swift in Sources */,
 				2B2B2B2B000000000000F00E /* ClipReviewView.swift in Sources */,

@@ -82,17 +82,25 @@ struct DetectionSettings: Codable, Equatable {
 
     /// V3.6 — minimum peak/min ratio across the 6-interval motion
     /// profile to confirm a swing. A real swing has a sharp burst
-    /// (ratio 5–20×); walking has a flat profile (ratio ~1.5×). The
-    /// algorithm also requires the peak interval to fall within the
-    /// swing window (intervals 3–5).
-    /// V3.7 production default 8.0 — strict enough to reject most
-    /// false positives. Lower to 4–5 if real swings get rejected.
-    var motionThreshold: Double = 8.0
-
-    /// How many seconds before the impact to grab Frame A. Kept as
-    /// a setting for backwards compat / future tuning, but V3.6's
-    /// algorithm uses a fixed 7-frame window; this value is unused.
-    var motionBeforeOffsetSeconds: Double = 1.5
+    /// V3.9 — ratio is now peak/median (was peak/min). Median is more
+    /// stable: a single outlier interval can't blow the ratio up.
+    /// Real swings: 1.5–4× peak/median. Walking: ~1.0–1.2×.
+    /// Production default 3.0× — picks up real swings with margin
+    /// while rejecting walking/stationary noise. Lower to 2.0× if
+    /// real swings get rejected; raise to 4.0× if false positives
+    /// from background motion creep in.
+    /// (Old V3.7 default was 8.0× peak/min — different scale; the
+    /// decoder migration below resets persisted V3.7 values.)
+    ///
+    // TODO: vestigial — V3.13 motion validator uses shape criteria
+    // (DetectionConstants.motionAcceptablePeakIntervals + the four
+    // shape predicates) instead of a peak/median ratio threshold.
+    // The Settings/Debug UI still exposes this slider, and the
+    // peak/median ratio is still computed for diagnostic display, but
+    // the value no longer influences confirmation. Address in a
+    // follow-up: either restore ratio-based veto, or strip the slider
+    // and persisted field.
+    var motionThreshold: Double = 3.0
 
     /// Effective multiplier the detector should use right now —
     /// override if the user dialed it, otherwise the preset's default.
@@ -106,8 +114,7 @@ struct DetectionSettings: Codable, Equatable {
          detectionMultiplierOverride: Double? = nil,
          minimumSpacingSeconds: Double = 6.0,
          motionValidationEnabled: Bool = true,
-         motionThreshold: Double = 8.0,
-         motionBeforeOffsetSeconds: Double = 1.5) {
+         motionThreshold: Double = 3.0) {
         self.preImpactSeconds = preImpactSeconds
         self.postImpactSeconds = postImpactSeconds
         self.preset = preset
@@ -115,7 +122,6 @@ struct DetectionSettings: Codable, Equatable {
         self.minimumSpacingSeconds = minimumSpacingSeconds
         self.motionValidationEnabled = motionValidationEnabled
         self.motionThreshold = motionThreshold
-        self.motionBeforeOffsetSeconds = motionBeforeOffsetSeconds
     }
 
     /// Forgiving decoder. Missing keys fall back to defaults, AND old
@@ -132,13 +138,17 @@ struct DetectionSettings: Codable, Equatable {
         self.minimumSpacingSeconds = (try? c.decode(Double.self, forKey: .minimumSpacingSeconds)) ?? 6.0
         self.detectionMultiplierOverride = try? c.decode(Double.self, forKey: .detectionMultiplierOverride)
         self.motionValidationEnabled    = (try? c.decode(Bool.self,   forKey: .motionValidationEnabled))    ?? true
-        self.motionThreshold            = (try? c.decode(Double.self, forKey: .motionThreshold))            ?? 8.0
-        self.motionBeforeOffsetSeconds  = (try? c.decode(Double.self, forKey: .motionBeforeOffsetSeconds))  ?? 1.5
-        // V3.5 → V3.6 migration: old motionThreshold values were
-        // percentages (0–50). The new field is a ratio (1–10). If a
-        // persisted value falls outside the new range, snap to default.
-        if self.motionThreshold > 10.0 || self.motionThreshold < 1.0 {
-            self.motionThreshold = 8.0
+        self.motionThreshold            = (try? c.decode(Double.self, forKey: .motionThreshold))            ?? 3.0
+        // Note: motionBeforeOffsetSeconds (formerly stored at this point)
+        // was removed in V4 cleanup as dead code — never read by any
+        // pipeline stage. Existing JSON containing the field is silently
+        // ignored by the forgiving decoder.
+        // V3.5 → V3.6 migration: old values were percentages (0–50).
+        // V3.7/V3.8 default was 8.0 (peak/min metric).
+        // V3.9 default is 3.0 (peak/median metric — different scale).
+        // Anything > 6.0 is a stale peak/min value; reset to V3.9 default.
+        if self.motionThreshold > 6.0 || self.motionThreshold < 1.0 {
+            self.motionThreshold = 3.0
         }
 
         if let p = try? c.decode(DetectionPreset.self, forKey: .preset) {
@@ -164,5 +174,7 @@ struct DetectionSettings: Codable, Equatable {
     static let postImpactRange: ClosedRange<Double> = 0.5...10.0
     static let minSpacingRange: ClosedRange<Double> = 0.5...30.0
     static let multiplierRange:      ClosedRange<Double> = 1.0...10.0
-    static let motionThresholdRange: ClosedRange<Double> = 1.0...20.0
+    /// V3.9 — peak/median ratio range. Real swings: 1.5–4×.
+    /// Slider tops out at 6× (anything higher rejects everything in practice).
+    static let motionThresholdRange: ClosedRange<Double> = 1.0...6.0
 }

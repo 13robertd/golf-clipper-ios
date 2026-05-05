@@ -336,11 +336,15 @@ final class AppState: ObservableObject {
                     // up the matching PHAsset on a background queue
                     // (the lookup involves per-asset metadata fetches
                     // that Photos warns about doing on main).
+                    NSLog("[NiceShot] Shared import: looking up PHAsset for filename='\(name)'")
                     guard let identifier = await Self.findAssetIdentifier(matching: name) else {
+                        NSLog("[NiceShot] Shared import: lookup MISSED for filename='\(name)' — no asset found in last 250 videos")
                         throw NSError(domain: "SharedImport", code: 2,
                                       userInfo: [NSLocalizedDescriptionKey: "Couldn't find a matching video in Photos for '\(name)'. Try sharing again or use the in-app picker."])
                     }
+                    NSLog("[NiceShot] Shared import: matched filename='\(name)' to assetID=\(identifier) — calling importer")
                     var v = try await importer.importVideo(fromAssetIdentifier: identifier)
+                    NSLog("[NiceShot] Shared import: importer returned ImportedVideo for assetID=\(identifier)")
                     v.batchId = batchId
                     v.processingStatus = .importing
                     importedVideo = v
@@ -449,27 +453,54 @@ final class AppState: ObservableObject {
     /// V6.2 — Resolve a Photos suggestedName to a PHAsset localIdentifier.
     /// Runs on a detached `Task` so the per-asset metadata fetches (which
     /// Photos warns about on the main queue) happen off the UI thread.
-    /// Capped at 250 most-recent videos: real-world shares are nearly
-    /// always recent, and the cap bounds worst-case latency on libraries
-    /// with thousands of clips.
+    /// Capped at 1000 most-recent videos.
+    ///
+    /// V6.5 — case-insensitive match + basename fallback (try matching
+    /// without extension if exact match misses). On a complete miss, log
+    /// the first 10 filenames we did see so the user can see what's in
+    /// the scan window vs what we were looking for.
     static func findAssetIdentifier(matching filename: String) async -> String? {
         guard !filename.isEmpty else { return nil }
         return await Task.detached(priority: .userInitiated) {
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             let result = PHAsset.fetchAssets(with: .video, options: options)
+
+            let target = filename.lowercased()
+            let targetBasename = (filename as NSString).deletingPathExtension.lowercased()
+
             var found: String?
-            let maxScan = 250
+            var sampledFilenames: [String] = []
+            let maxScan = 1000
+            let sampleSize = 10
+
             result.enumerateObjects { asset, idx, stop in
                 if idx >= maxScan {
                     stop.pointee = true
                     return
                 }
                 let resources = PHAssetResource.assetResources(for: asset)
-                if resources.contains(where: { $0.originalFilename == filename }) {
-                    found = asset.localIdentifier
-                    stop.pointee = true
+                for r in resources {
+                    if sampledFilenames.count < sampleSize {
+                        sampledFilenames.append(r.originalFilename)
+                    }
+                    let candidate = r.originalFilename.lowercased()
+                    if candidate == target {
+                        found = asset.localIdentifier
+                        stop.pointee = true
+                        return
+                    }
+                    let candidateBasename = (r.originalFilename as NSString).deletingPathExtension.lowercased()
+                    if candidateBasename == targetBasename {
+                        found = asset.localIdentifier
+                        stop.pointee = true
+                        return
+                    }
                 }
+            }
+
+            if found == nil {
+                NSLog("[NiceShot] findAssetIdentifier: '\(filename)' not found in last \(maxScan) videos. First \(sampledFilenames.count) PHAssetResource filenames seen: \(sampledFilenames)")
             }
             return found
         }.value
@@ -593,20 +624,80 @@ final class AppState: ObservableObject {
         self.lastCandidates = result.candidates
         self.lastDetectionStats = result.stats
 
-        // 3. Motion validation. V3.8 — skipped for under-15s videos
-        //    that already have at least one audio peak (see header comment).
-        let isShortVideo = video.duration < Self.shortVideoThresholdSeconds
+        // V3.10 + V3.11 + V3.12 pipeline:
+        //   1. Audio threshold detection (existing) — result has timestamps
+        //      + per-candidate energyRatio + transient verdict (attack /
+        //      duration / isImpactLike) annotated by the detector.
+        //   2. Pre-reject doomed candidates BEFORE dominance check —
+        //      zero-prefix (t < 0.5s, motion can't validate) and speech-
+        //      like (transient says no). Including them as "competitors"
+        //      in the dominance comparison inflates the next-strongest
+        //      denominator and blocks legitimate impacts from auto-
+        //      confirmation, even though they can't produce clips.
+        //   3. Dominant-peak auto-confirm among the pre-filtered set —
+        //      if one candidate is ≥2× the next (or it's the only
+        //      survivor), bypass motion validation.
+        //   4. Motion validation for non-dominant pre-filter survivors.
+
+        // Step 2: pre-filter — drop candidates doomed by transient (speech)
+        // or by zero-prefix prediction (impact at t < 0.5s, motion can't
+        // validate). The result is `validatableCandidates` — the set of
+        // timestamps worth carrying through dominance and motion.
+        let transientByTime: [Double: Bool] = Dictionary(
+            uniqueKeysWithValues: result.candidates
+                .filter { $0.accepted }
+                .compactMap { c in c.isImpactLike.map { (c.time, $0) } }
+        )
+        let validatableCandidates = result.impactTimestamps.filter { time in
+            // Zero-prefix prediction: motion val can't validate t < 0.5s
+            // (frame extraction clamps to 0, producing duplicate frames
+            // and zero-valued intervals). Skip these now so they don't
+            // inflate the dominance denominator.
+            if time < DetectionConstants.zeroPrefixPredictionThresholdSeconds {
+                DetectionConstants.verboseLog(String(format: "[NiceShot] Pre-filter: rejecting %.2fs (t < %.1fs — motion validator can't validate)",
+                                                      time, DetectionConstants.zeroPrefixPredictionThresholdSeconds))
+                return false
+            }
+            // Transient: drop speech-like sounds.
+            if let entry = transientByTime.first(where: { abs($0.key - time) < 0.05 }),
+               entry.value == false {
+                DetectionConstants.verboseLog(String(format: "[NiceShot] Pre-filter: rejecting %.2fs (transient SPEECH-LIKE)", time))
+                return false
+            }
+            return true
+        }
+
+        // Step 3: dominant peak among pre-filter survivors. Operates on
+        // `validatableCandidates` exclusively — see `findDominantAudioPeak`
+        // doc comment for why.
+        let candidatesForDominance = result.candidates.filter { c in
+            c.accepted && validatableCandidates.contains(where: { abs($0 - c.time) < 0.05 })
+        }
+        let dominantTime = Self.findDominantAudioPeak(
+            among: candidatesForDominance,
+            multiplier: DetectionConstants.dominanceMultiplier
+        )
+
+        // Build the non-dominant survivor list for motion validation.
+        let transientSurvivors = validatableCandidates.filter { time in
+            if let dt = dominantTime, abs(time - dt) < 0.5 { return false }
+            return true
+        }
+
+        // Step 4: motion validation. V3.8 — skipped for short videos
+        // that already have at least one (transient-survivor) audio peak.
+        let isShortVideo = video.duration < DetectionConstants.shortVideoThresholdSeconds
         let runMotionValidation = effectiveSettings.motionValidationEnabled
-            && !(isShortVideo && !result.impactTimestamps.isEmpty)
+            && !(isShortVideo && !transientSurvivors.isEmpty)
 
         var timestampsToExport: [Double]
         let motionConfirmedCount: Int
-        if runMotionValidation && !result.impactTimestamps.isEmpty {
+        if runMotionValidation && !transientSurvivors.isEmpty {
             progress(.validatingMotion)
             let validation = await motionValidator.validate(
                 videoURL: video.localFileURL,
                 videoDuration: video.duration,
-                candidates: result.impactTimestamps,
+                candidates: transientSurvivors,
                 threshold: effectiveSettings.motionThreshold,
                 progress: { [weak self] done, total in
                     Task { @MainActor in
@@ -622,12 +713,20 @@ final class AppState: ObservableObject {
         } else {
             self.lastMotionValidations = []
             self.lastMotionCameraMoving = false
-            timestampsToExport = result.impactTimestamps
+            timestampsToExport = transientSurvivors
             // motionConfirmedCount only describes the validator's verdict.
             // When validation didn't run, it's "n/a" — we represent that
-            // as audio-peak count (i.e. nothing was rejected). The
-            // PIPELINE SUMMARY line below labels it as skipped.
-            motionConfirmedCount = result.impactTimestamps.count
+            // as the count we'd otherwise have validated. The PIPELINE
+            // SUMMARY line below labels it as skipped.
+            motionConfirmedCount = transientSurvivors.count
+        }
+
+        // Step 5: re-add the dominant peak (bypassed transient + motion).
+        if let dt = dominantTime,
+           !timestampsToExport.contains(where: { abs($0 - dt) < 0.5 }) {
+            print(String(format: "[NiceShot] Auto-confirmed dominant audio peak at %.2fs (≥2× next strongest) — bypassed transient + motion", dt))
+            timestampsToExport.append(dt)
+            timestampsToExport.sort()
         }
 
         // V3.8 — short-video fallback. If the whole pipeline produced
@@ -696,20 +795,61 @@ final class AppState: ObservableObject {
         return .success(clipsAdded: withThumbs.count)
     }
 
-    /// V3.8 — videos shorter than this get the short-video accommodations
-    /// (loosened spacing, skipped motion validation, loudest-peak fallback).
-    /// 15s is short enough to confidently say "user filmed one swing on
-    /// purpose" and long enough to fit a full pre/post-impact window.
-    private static let shortVideoThresholdSeconds: Double = 15.0
+    /// V3.10 / V3.12 — Find the audio peak whose energy ratio is at
+    /// least `multiplier` times higher than every other candidate in
+    /// the input set. Returns nil when there's no clear standout.
+    /// Always logs the comparison so we can see what passed/failed.
+    ///
+    /// **Caller assumption.** `candidates` must already be the
+    /// pre-filtered survivor set (transient drops + zero-prefix
+    /// drops applied). Comparing against pre-filter-rejected peaks
+    /// would compare against doomed candidates and let real impacts
+    /// be blocked from auto-confirmation.
+    private static func findDominantAudioPeak(among candidates: [ImpactCandidate],
+                                              multiplier: Double) -> Double? {
+        let sorted = candidates.sorted { $0.energyRatio > $1.energyRatio }
 
-    /// V3.8 — for videos under 30s, force min-spacing down to 2.0s so a
-    /// short recording with two real peaks (e.g. mishit + reset whack)
-    /// doesn't lose the second one to the default 6.0s cooldown.
+        let summary = sorted
+            .map { String(format: "%.2fs:%.2fx", $0.time, $0.energyRatio) }
+            .joined(separator: ", ")
+        DetectionConstants.verboseLog("[NiceShot] Dominant-peak check | survivors=[\(summary)]")
+
+        guard let strongest = sorted.first else {
+            DetectionConstants.verboseLog("[NiceShot] Dominant-peak check: no survivors after pre-filter")
+            return nil
+        }
+        if sorted.count == 1 {
+            DetectionConstants.verboseLog(String(format: "[NiceShot] Dominant-peak check: single survivor at %.2fs (ratio %.2fx) — auto-confirmed",
+                                                  strongest.time, strongest.energyRatio))
+            return strongest.time
+        }
+        let next = sorted[1]
+        let needed = multiplier * next.energyRatio
+        let isDominant = strongest.energyRatio >= needed
+        DetectionConstants.verboseLog(String(format: "[NiceShot] Dominant-peak check: strongest=%.2fs(%.2fx) next=%.2fs(%.2fx) need ≥%.2fx → %@",
+                                              strongest.time, strongest.energyRatio,
+                                              next.time, next.energyRatio, needed,
+                                              isDominant ? "DOMINANT" : "not dominant"))
+        return isDominant ? strongest.time : nil
+    }
+
+    /// V3.8 — for videos under
+    /// `DetectionConstants.shortVideoSpacingThresholdSeconds`, force
+    /// min-spacing down to `shortVideoMinSpacingSeconds` so a short
+    /// recording with two real peaks (e.g. mishit + reset whack) doesn't
+    /// lose the second one to the default 6.0s cooldown.
+    ///
+    // TODO: bug — min-spacing precision. Real candidate at 16.32s
+    // (4.46×) was eliminated by 17.26s (4.88×) only 0.94s apart in
+    // IMG_2253. The current 6.0s minimum may be too aggressive for
+    // fast-paced range sessions where consecutive swings happen 1–3s
+    // apart. Consider tying min-spacing to detected video tempo or
+    // exposing it per-mode in the future config system.
     private func adjustedSettings(for video: ImportedVideo,
                                   base: DetectionSettings) -> DetectionSettings {
-        guard video.duration < 30 else { return base }
+        guard video.duration < DetectionConstants.shortVideoSpacingThresholdSeconds else { return base }
         var s = base
-        s.minimumSpacingSeconds = min(2.0, base.minimumSpacingSeconds)
+        s.minimumSpacingSeconds = min(DetectionConstants.shortVideoMinSpacingSeconds, base.minimumSpacingSeconds)
         return s
     }
 

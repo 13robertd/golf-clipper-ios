@@ -57,6 +57,14 @@ struct ImpactCandidate: Codable, Hashable, Identifiable {
     let threshold: Double
     let accepted: Bool
     let rejectionReason: String?
+    /// V3.11 — transient shape analysis. Real club-on-ball impact has a
+    /// fast attack (<30ms) and short duration (<150ms). Speech has
+    /// gradual attack (>50ms) and sustained duration (>200ms).
+    /// nil = analysis not performed (e.g., candidate didn't make the
+    /// final accepted set, so we skipped the work).
+    var attackMs: Int? = nil
+    var durationMs: Int? = nil
+    var isImpactLike: Bool? = nil
 }
 
 /// Diagnostic stats from one detection run. Drives the new Settings →
@@ -113,22 +121,40 @@ enum AudioImpactError: LocalizedError {
 
 final class AudioImpactDetector {
 
+    /// Audio analysis sample rate. The reader's output settings force
+    /// the buffer to this format regardless of the source file's
+    /// recording rate, so this is also the effective rate seen by the
+    /// rest of the pipeline. If the source file has a different rate
+    /// AVAssetReader resamples on the fly.
     private let analysisSampleRate: Double = 44_100
-    /// 20 ms windows for energy analysis (882 samples @ 44.1 kHz).
-    private let windowSampleCount: Int = 882
+    /// Window length in samples. Derived from the constants file's
+    /// audioWindowSeconds × analysisSampleRate (882 @ 20ms × 44.1 kHz).
+    private let windowSampleCount: Int = Int(DetectionConstants.audioWindowSeconds * 44_100)
 
-    /// Number of preceding windows averaged for the energy-ratio
-    /// denominator. ~200 ms history.
-    private static let prevWindowsForRatio = 10
-
-    /// Pass-A dedup window — collapses an impact's sub-peaks (hit,
-    /// ground contact, echo) into one event.
-    private static let dedupWindowSeconds = 0.5
-
-    /// Floor on the ratio denominator. Prevents silence-amplification
-    /// (current sample's tiny noise / silence's tinier noise = ∞).
-    private static let denominatorFloor: Float = 0.01
-
+    /// Detect audio impacts in `video`'s soundtrack and emit candidate
+    /// timestamps with diagnostic metadata.
+    ///
+    /// **Audio format assumption.** The reader configures its output
+    /// for 44.1 kHz mono Float32 — see `readAndComputeRMS`. Source
+    /// files with different rates / channel counts are resampled by
+    /// AVFoundation transparently; the rest of the pipeline never sees
+    /// the original format. If the source has no audio track at all,
+    /// `videoHasAudioTrack` (called earlier in AppState) returns false
+    /// and we never get here.
+    ///
+    /// **Empty-result behavior.** Various error paths (decoder failure,
+    /// no windows, zero-duration audio) silently emit an empty
+    /// `impactTimestamps` array rather than throwing. Callers that need
+    /// to distinguish "no impacts" from "decoder broke" must inspect
+    /// the stats / candidates fields.
+    ///
+    // TODO: bug — quiet impacts below noise floor invisible to the
+    // energy-ratio detector. Confirmed via diagnostic logs that real
+    // ball contacts at 86s and 120s in IMG_2253 don't appear in the
+    // top-30 raw peaks at all when median noise is high. Architectural
+    // limitation, not a tuning issue: peak/(rolling-mean) compresses
+    // when noise is loud. A spectral signature pass (high-freq
+    // transient detection) is the proper fix; deferred to its own diff.
     func detectImpacts(in video: ImportedVideo,
                        settings: DetectionSettings,
                        progress: @escaping (Double) -> Void = { _ in }) async throws -> ImpactDetectionResult {
@@ -136,13 +162,13 @@ final class AudioImpactDetector {
         let startTime = Date()
         let memBefore = memoryUsageMB()
         print("[NiceShot] Video duration: \(String(format: "%.2f", video.duration)) seconds")
-        print("[NiceShot] Memory usage before processing: \(String(format: "%.1f", memBefore)) MB")
+        DetectionConstants.verboseLog("[NiceShot] Memory usage before processing: \(String(format: "%.1f", memBefore)) MB")
 
         // ---- Pass 1: read audio + per-window RMS via vDSP ---------------------
         let windows = try await readAndComputeRMS(for: video, progress: progress)
         let memAfterDecode = memoryUsageMB()
         print("[NiceShot] Total windows analyzed: \(windows.count)")
-        print("[NiceShot] Memory usage after decode: \(String(format: "%.1f", memAfterDecode)) MB")
+        DetectionConstants.verboseLog("[NiceShot] Memory usage after decode: \(String(format: "%.1f", memAfterDecode)) MB")
 
         // ---- Pass 2: energy ratios -------------------------------------------
         let ratioWindows = computeEnergyRatios(windows)
@@ -163,29 +189,110 @@ final class AudioImpactDetector {
         let maxEnergyRatio = loudestWindow.map { Double($0.energyRatio) } ?? 0
         let loudestWindowTime = loudestWindow.map { $0.time }
 
-        print("[NiceShot] Multiplier: \(multiplier)")
-        print("[NiceShot] Median ratio (noise floor): \(String(format: "%.3f", medianRatio))")
-        print("[NiceShot] Stddev ratio: \(String(format: "%.3f", stddevRatio))")
-        print("[NiceShot] Adaptive threshold: \(String(format: "%.3f", threshold))")
+        // V3.14 — consolidated threshold derivation log (verbose).
+        DetectionConstants.verboseLog("[NiceShot] Adaptive threshold computation:")
+        DetectionConstants.verboseLog(String(format: "  noise_floor (median ratio) = %.3f", medianRatio))
+        DetectionConstants.verboseLog(String(format: "  stddev = %.3f", stddevRatio))
+        DetectionConstants.verboseLog(String(format: "  multiplier = %.2f", multiplier))
+        DetectionConstants.verboseLog(String(format: "  threshold = noise_floor + (multiplier × stddev) = %.3f + %.3f = %.3f",
+                                              medianRatio, multiplier * stddevRatio, threshold))
+        // Max peak ratio is always-on — useful at-a-glance to compare
+        // "what was actually the loudest moment" to the threshold.
         if let t = loudestWindowTime {
             print("[NiceShot] Max peak ratio: \(String(format: "%.3f", maxEnergyRatio)) at \(String(format: "%.2fs", t)) (threshold \(String(format: "%.3f", threshold)))")
         } else {
             print("[NiceShot] Max peak ratio: n/a (no windows)")
         }
 
+        // V3.14 diagnostic: top 30 raw audio peaks across the WHOLE video,
+        // regardless of threshold. We dedup at 500ms first so each spike
+        // is one entry instead of a cluster of adjacent windows. This
+        // surfaces quiet impacts that don't cross the adaptive threshold.
+        let allPeaksDeduped = collapseDuplicates(ratioWindows,
+                                                 windowDuration: DetectionConstants.audioDedupWindowSeconds)
+        let top30 = allPeaksDeduped
+            .sorted { $0.energyRatio > $1.energyRatio }
+            .prefix(30)
+        let top30Strs = top30.map {
+            String(format: "%.2fs:%.2fx", $0.time, Double($0.energyRatio))
+        }
+        DetectionConstants.verboseLog("[NiceShot] Top \(top30.count) raw audio peaks (pre-threshold, sorted by ratio desc):")
+        DetectionConstants.verboseLog("  [\(top30Strs.joined(separator: ", "))]")
+
         // ---- Pass 4: raw peaks ------------------------------------------------
         let rawPeaks = ratioWindows.filter { Double($0.energyRatio) > threshold }
         print("[NiceShot] Peaks above threshold: \(rawPeaks.count) \(formatTimestamps(rawPeaks.map { $0.time }))")
 
+        // V3.14 diagnostic: top 10 peaks rejected by the adaptive threshold,
+        // showing how close they were. Uses the same 500ms dedup so each
+        // entry is a distinct event. Tells us whether the threshold is
+        // just barely too high vs whether the rejected candidates are
+        // nowhere close.
+        let rejectedByThreshold = allPeaksDeduped.filter { Double($0.energyRatio) <= threshold }
+        let top10Rejected = rejectedByThreshold
+            .sorted { $0.energyRatio > $1.energyRatio }
+            .prefix(10)
+        let top10RejectedStrs = top10Rejected.map { peak -> String in
+            let r = Double(peak.energyRatio)
+            let gap = threshold - r
+            return String(format: "%.2fs:%.2fx (gap: %.2fx)", peak.time, r, gap)
+        }
+        DetectionConstants.verboseLog(String(format: "[NiceShot] Peaks rejected by adaptive threshold (%.3f×): showing top %d closest:",
+                                              threshold, top10Rejected.count))
+        DetectionConstants.verboseLog("  [\(top10RejectedStrs.joined(separator: ", "))]")
+
         // ---- Pass 5a: 500 ms dedup -------------------------------------------
         let dedupedPeaks = collapseDuplicates(rawPeaks,
-                                              windowDuration: Self.dedupWindowSeconds)
+                                              windowDuration: DetectionConstants.audioDedupWindowSeconds)
         print("[NiceShot] Peaks after 500ms dedup: \(dedupedPeaks.count) \(formatTimestamps(dedupedPeaks.map { $0.time }))")
+
+        // V3.14 diagnostic: which raw peaks did the dedup drop, and which
+        // surviving peak caused each drop (the "neighbor"). For a peak
+        // dropped at time T, the neighbor is the closest kept peak.
+        let dedupKeptKeys = Set(dedupedPeaks.map { roundedKey($0.time) })
+        let dedupDropped: [(dropped: AudioWindow, neighbor: AudioWindow)] = rawPeaks.compactMap { peak in
+            guard !dedupKeptKeys.contains(roundedKey(peak.time)) else { return nil }
+            let neighbor = dedupedPeaks.min(by: {
+                abs($0.time - peak.time) < abs($1.time - peak.time)
+            })
+            return neighbor.map { (peak, $0) }
+        }
+        DetectionConstants.verboseLog("[NiceShot] 500ms dedup: kept \(dedupedPeaks.count), dropped \(dedupDropped.count)")
+        if !dedupDropped.isEmpty {
+            let dropStrs = dedupDropped.map {
+                String(format: "%.2fs:%.2fx (kept %.2fs, %.2fs apart)",
+                       $0.dropped.time, Double($0.dropped.energyRatio),
+                       $0.neighbor.time, abs($0.neighbor.time - $0.dropped.time))
+            }
+            DetectionConstants.verboseLog("  Dropped: [\(dropStrs.joined(separator: ", "))]")
+        }
 
         // ---- Pass 5b: min-spacing cooldown -----------------------------------
         let acceptedTimes = applyMinSpacing(dedupedPeaks,
                                             minSpacing: settings.minimumSpacingSeconds)
         print("[NiceShot] Peaks after min spacing filter: \(acceptedTimes.count) \(formatTimestamps(acceptedTimes))")
+
+        // V3.14 diagnostic: which deduped peaks did min-spacing drop,
+        // and which surviving peak caused each drop. Drops happen when
+        // a peak is within `minSpacing` of a louder, already-accepted peak.
+        let acceptedKeys = Set(acceptedTimes.map { roundedKey($0) })
+        let spacingDropped: [(dropped: AudioWindow, neighbor: Double)] = dedupedPeaks.compactMap { peak in
+            guard !acceptedKeys.contains(roundedKey(peak.time)) else { return nil }
+            // Find the closest accepted timestamp.
+            guard let neighbor = acceptedTimes.min(by: {
+                abs($0 - peak.time) < abs($1 - peak.time)
+            }) else { return nil }
+            return (peak, neighbor)
+        }
+        DetectionConstants.verboseLog("[NiceShot] Min-spacing filter (\(String(format: "%.1fs", settings.minimumSpacingSeconds)) minimum): kept \(acceptedTimes.count), dropped \(spacingDropped.count)")
+        if !spacingDropped.isEmpty {
+            let dropStrs = spacingDropped.map {
+                String(format: "%.2fs:%.2fx (kept %.2fs, %.2fs apart)",
+                       $0.dropped.time, Double($0.dropped.energyRatio),
+                       $0.neighbor, abs($0.neighbor - $0.dropped.time))
+            }
+            DetectionConstants.verboseLog("  Dropped: [\(dropStrs.joined(separator: ", "))]")
+        }
 
         // ---- Build candidate list for the debug screen -----------------------
         let acceptedSet = Set(acceptedTimes.map { roundedKey($0) })
@@ -218,10 +325,26 @@ final class AudioImpactDetector {
             ))
         }
 
+        // V3.11 — Transient shape analysis. For each accepted candidate,
+        // measure attack time (how fast amplitude rose) and duration
+        // (how long it stayed elevated) using the existing 20ms RMS
+        // windows. Real impacts: attack <30ms, duration <150ms.
+        // Speech: attack >50ms, duration 200ms+ (gradual rise, sustain).
+        // Operates on what we already have — no FFT, no re-reading audio.
+        for i in 0..<candidates.count where candidates[i].accepted {
+            let analysis = analyzeTransient(at: candidates[i].time, in: ratioWindows)
+            candidates[i].attackMs = analysis.attackMs
+            candidates[i].durationMs = analysis.durationMs
+            candidates[i].isImpactLike = analysis.isImpactLike
+            let verdict = analysis.isImpactLike ? "IMPACT-LIKE" : "SPEECH-LIKE (rejected)"
+            DetectionConstants.verboseLog(String(format: "[NiceShot] Candidate at %.2fs: attack=%dms duration=%dms → %@",
+                                                  candidates[i].time, analysis.attackMs, analysis.durationMs, verdict))
+        }
+
         let processingTime = Date().timeIntervalSince(startTime)
         let memAfter = memoryUsageMB()
         print("[NiceShot] Processing time: \(String(format: "%.2f", processingTime)) seconds")
-        print("[NiceShot] Memory usage after processing: \(String(format: "%.1f", memAfter)) MB")
+        DetectionConstants.verboseLog("[NiceShot] Memory usage after processing: \(String(format: "%.1f", memAfter)) MB")
 
         let stats = DetectionStats(
             videoDurationSeconds: video.duration,
@@ -267,7 +390,7 @@ final class AudioImpactDetector {
         }
         print("[NiceShot] Audio track found: yes")
         print("[NiceShot] Audio format: \(Int(analysisSampleRate)) Hz mono Float32")
-        print("[NiceShot] Analysis window size: \(windowSampleCount) samples (\(String(format: "%.1f", Double(windowSampleCount) / analysisSampleRate * 1000)) ms)")
+        DetectionConstants.verboseLog("[NiceShot] Analysis window size: \(windowSampleCount) samples (\(String(format: "%.1f", Double(windowSampleCount) / analysisSampleRate * 1000)) ms)")
 
         let totalDuration = video.duration
 
@@ -369,7 +492,7 @@ final class AudioImpactDetector {
             throw AudioImpactError.readerFailed(reader.error?.localizedDescription ?? "unknown")
         }
         progress(1.0)
-        print("[NiceShot] Total audio samples processed: \(samplesProcessed)")
+        DetectionConstants.verboseLog("[NiceShot] Total audio samples processed: \(samplesProcessed)")
         return windows
     }
 
@@ -380,12 +503,12 @@ final class AudioImpactDetector {
         var result = windows
         // Rolling sum of the last `prevWindowsForRatio` RMS values.
         var rollingSum: Float = 0
-        let n = Self.prevWindowsForRatio
+        let n = DetectionConstants.audioPrevWindowsForRatio
         for i in result.indices {
             let prevCount = min(i, n)
             let avgPrev: Float = prevCount > 0
-                ? max(rollingSum / Float(prevCount), Self.denominatorFloor)
-                : Self.denominatorFloor
+                ? max(rollingSum / Float(prevCount), Float(DetectionConstants.audioRatioDenominatorFloor))
+                : Float(DetectionConstants.audioRatioDenominatorFloor)
             result[i].energyRatio = result[i].rms / avgPrev
 
             // Slide the window: add this rms, drop the one falling out the back.
@@ -485,5 +608,95 @@ final class AudioImpactDetector {
     private func formatTimestamps(_ times: [Double]) -> String {
         let body = times.map { String(format: "%.2fs", $0) }.joined(separator: ", ")
         return "[" + body + "]"
+    }
+
+    // MARK: - V3.11 transient shape analysis
+
+    private struct TransientAnalysis {
+        let attackMs: Int
+        let durationMs: Int
+        let isImpactLike: Bool
+    }
+
+    /// V3.11 — Distinguish sharp impacts (club-on-ball: <30ms attack,
+    /// <150ms total duration) from sustained sounds (speech, motors:
+    /// >50ms gradual attack, 200ms+ duration). Uses the 20ms RMS
+    /// windows we already computed — no FFT, no extra audio reads.
+    ///
+    /// Window granularity = 20ms, so attack/duration are measured in
+    /// 20ms increments. That's coarse but enough to discriminate
+    /// "instant" (0-20ms attack) from "gradual" (60ms+ attack).
+    ///
+    /// Attack threshold: 25% of peak RMS. We count windows BEFORE the
+    /// peak that were already at this level — those are the "rising"
+    /// windows the attack passed through. A sharp impact has 0 rising
+    /// windows; speech has 3-5+.
+    ///
+    /// Duration threshold: 50% of peak RMS. We count windows from the
+    /// peak onward that stay above this level. A sharp impact decays
+    /// quickly (1-2 windows); speech sustains (8+).
+    private func analyzeTransient(at peakTime: Double, in windows: [AudioWindow]) -> TransientAnalysis {
+        guard !windows.isEmpty else {
+            return TransientAnalysis(attackMs: 0, durationMs: 0, isImpactLike: false)
+        }
+        let windowMs = Int(DetectionConstants.audioWindowSeconds * 1000)
+
+        // Find the loudest window within ±25ms of the candidate time.
+        // The candidate time was generated from a window center, but a
+        // small drift can happen with dedup, so we search a small window.
+        var peakIdx = 0
+        var peakRms: Float = -1
+        for i in 0..<windows.count {
+            if abs(windows[i].time - peakTime) > 0.025 { continue }
+            if windows[i].rms > peakRms {
+                peakRms = windows[i].rms
+                peakIdx = i
+            }
+        }
+        // If nothing in range, fall back to the closest window.
+        if peakRms < 0 {
+            var closest = 0
+            var bestDelta = Double.greatestFiniteMagnitude
+            for i in 0..<windows.count {
+                let d = abs(windows[i].time - peakTime)
+                if d < bestDelta { bestDelta = d; closest = i }
+            }
+            peakIdx = closest
+            peakRms = windows[closest].rms
+        }
+        guard peakRms > 0 else {
+            return TransientAnalysis(attackMs: 0, durationMs: 0, isImpactLike: false)
+        }
+
+        let risingThreshold = peakRms * Float(DetectionConstants.transientRisingFractionOfPeak)
+        let elevatedThreshold = peakRms * Float(DetectionConstants.transientElevatedFractionOfPeak)
+
+        // Attack: how many windows before the peak were already rising?
+        var attackWindows = 0
+        var i = peakIdx - 1
+        while i >= 0 && windows[i].rms >= risingThreshold {
+            attackWindows += 1
+            i -= 1
+            if attackWindows > 20 { break } // safety cap
+        }
+
+        // Duration: how many windows from peak onward stay elevated?
+        // Count includes the peak window itself.
+        var durationWindows = 1
+        var j = peakIdx + 1
+        while j < windows.count && windows[j].rms >= elevatedThreshold {
+            durationWindows += 1
+            j += 1
+            if durationWindows > 20 { break }
+        }
+
+        let attackMs = attackWindows * windowMs
+        let durationMs = durationWindows * windowMs
+        let isImpactLike = attackMs <= DetectionConstants.transientMaxAttackMs
+                        && durationMs <= DetectionConstants.transientMaxDurationMs
+
+        return TransientAnalysis(attackMs: attackMs,
+                                 durationMs: durationMs,
+                                 isImpactLike: isImpactLike)
     }
 }

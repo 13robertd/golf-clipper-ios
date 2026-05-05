@@ -80,31 +80,42 @@ struct MotionValidationResult {
 
 final class MotionValidator {
 
-    // Small fixed thumbnail size — motion detection doesn't need pixels.
-    private static let frameWidth  = 160
-    private static let frameHeight = 120
-    /// Per-pixel grayscale change threshold (0–255).
-    private static let pixelChangeThreshold: Int = 20
-
-    /// Time offsets relative to impact for the 7-frame profile.
-    private static let frameOffsets: [Double] = [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0]
-    /// 1-based interval indices acceptable as the peak position.
-    private static let acceptablePeakIntervals: Set<Int> = [3, 4, 5]
-    /// Floor on the min-score denominator. Without this, an interval
-    /// with literally 0 % changed pixels would blow the ratio to ∞.
-    private static let minScoreFloor: Double = 0.001
-    /// Absolute floor on the PEAK score. If the busiest interval in
-    /// the window has fewer than this many pixels changed, there's no
-    /// real motion to validate — the spike ratio is just noise being
-    /// amplified by the min-score floor. 1.0 % of 19,200 pixels = 192
-    /// pixels, well above the JPEG/quantization noise of ~50 pixels
-    /// but well below the typical 5–30 % peak of a real swing.
-    private static let minPeakMotionScore: Double = 1.0
-
     /// Validate audio candidates against video motion. `progress(done,
     /// total)` fires before each candidate so the UI can show
     /// "Validating swing N of M…". `videoDuration` is used to clamp
     /// frame timestamps that fall outside [0, duration].
+    ///
+    /// **Profile-length assumption.** Each candidate is scored on a
+    /// 6-element motion profile derived from 7 frame-grabs at fixed
+    /// offsets `DetectionConstants.motionFrameOffsetsSeconds` around
+    /// the audio impact. The shape classifier and zero-prefix gate
+    /// rely on positional indices (first / peak / last) within this
+    /// 6-element layout. If frame extraction fails on individual
+    /// frames the profile is shorter than 6, but `intervalNumbers`
+    /// preserves the original 1-based interval index so windows-3-4-5
+    /// detection still works.
+    ///
+    /// **Profile units.** Each entry is the percentage (0–100) of
+    /// downsampled pixels (160×120 = 19,200) whose grayscale value
+    /// changed by more than `motionPixelChangeThreshold` between the
+    /// two frames bracketing that interval. So 5.0 = "5% of pixels
+    /// changed meaningfully" — modest motion. 25.0 = strong motion.
+    ///
+    // TODO: bug — silent motion-extraction failures. Multiple videos
+    // produce all-zero motion profiles for valid mid-video timestamps
+    // (70.58s in IMG_2253, 205.86s/217.82s in IMG_2252). The motion
+    // extractor (`extractFrames`/`extractGrayBytes`) returns zeros
+    // without surfacing a reason. The downstream "Almost no motion in
+    // window" rejection masks the real failure. Investigate frame
+    // extraction errors separately.
+    //
+    // TODO: bug — end-of-video motion profile artifact. Profiles like
+    // [12.32, 14.90, 18.03, 14.14, 0.00, 0.00] (126.06s in IMG_2253)
+    // emit trailing zeros because the video ends mid-window. The shape
+    // classifier currently confirms on partial profiles; boundary
+    // handling at end-of-video is unclear. Decide whether to clamp the
+    // analysis window earlier or treat trailing-zero profiles as
+    // suspect.
     func validate(videoURL: URL,
                   videoDuration: Double,
                   candidates: [Double],
@@ -166,7 +177,7 @@ final class MotionValidator {
         // to `videoDuration`. We extract whichever 7 timestamps result
         // and run the spike check on whatever intervals are available.
         let upperBound = max(0, videoDuration)
-        let times = Self.frameOffsets.map { offset -> Double in
+        let times = DetectionConstants.motionFrameOffsetsSeconds.map { offset -> Double in
             min(max(impactTime + offset, 0.0), upperBound)
         }
 
@@ -202,42 +213,88 @@ final class MotionValidator {
         }
 
         let maxScore = profile.max() ?? 0
-        let minScoreRaw = profile.min() ?? 0
-        let minScore = max(minScoreRaw, Self.minScoreFloor)
-        let ratio = maxScore / minScore
 
         // Peak interval is the original interval number (1–6) — not
         // the index within `profile`, which may have skipped some.
         let peakIdxInProfile = profile.firstIndex(of: maxScore) ?? 0
         let peakInterval = intervalNumbers[peakIdxInProfile]
 
-        let inSwingWindow = Self.acceptablePeakIntervals.contains(peakInterval)
-        let hasSpeedSpike = ratio >= threshold
-        // Sanity check: even if the ratio looks high, the absolute
-        // peak motion has to be meaningful. Without this, a stationary
-        // tripod with 0 %-ish noise across all six intervals can have
-        // a single interval at e.g. 0.04 %, and divide-by-floor blows
-        // that into a "huge" ratio that confirms a non-existent swing.
-        let hasRealMotion = maxScore >= Self.minPeakMotionScore
-        let confirmed = inSwingWindow && hasSpeedSpike && hasRealMotion
+        // Keep peak/median ratio for backward-compat logging only.
+        // V3.13 doesn't use it for the verdict — see shape test below.
+        let median = Self.median(of: profile)
+        let denominator = max(median, DetectionConstants.motionMedianScoreFloor)
+        let ratio = maxScore / denominator
 
-        let reason: String?
-        if confirmed {
-            reason = nil
-        } else if !hasRealMotion {
-            reason = "Almost no motion in window — likely camera-stationary noise"
-        } else if !hasSpeedSpike && !inSwingWindow {
-            reason = "No speed spike, peak outside swing window"
-        } else if !hasSpeedSpike {
-            reason = "Uniform motion — likely walking"
-        } else {
-            // Spike exists but in interval 1, 2, or 6 — wrong place.
-            if peakInterval <= 2 {
-                reason = "Peak before swing window — likely walking into position"
-            } else {
-                reason = "Peak after swing window — audio may be offset"
-            }
+        // === V3.13 — shape-based classification ====================
+        //
+        // Replaces V3.9's peak/median ratio test, which rejected real
+        // swings whose pre-impact intervals had non-zero "windup" motion
+        // (golfer addressing the ball, taking the club back). The
+        // windup raised the median and compressed the peak/median ratio
+        // below threshold. The shape test asks "does this look like a
+        // swing?" instead of "is the peak much louder than the rest?"
+        //
+        // Pre-checks (preserved from V3.9):
+        //   • All-zero / near-zero profile → REJECT (motion extraction
+        //     failed or pure tripod noise)
+        //   • Leading zeros (first N intervals < epsilon) → REJECT
+        //     (impact at video start; no pre-impact data)
+        //
+        // Shape test (4 criteria; ≥3 must pass to CONFIRM):
+        //   1. Low pre-motion baseline:   profile[0] < 0.25 × max
+        //   2. Near-monotonic ramp:       ≤1 dip from index 0 to peak
+        //   3. Peak in swing window:      interval ∈ {3,4,5,6} (1-based)
+        //   4. Post-peak decay or sustain: profile[last] < profile[peak]
+        //                                  (vacuous if peak is last)
+
+        // Pre-check: all-zero / near-zero → REJECT.
+        let hasRealMotion = maxScore >= DetectionConstants.motionMinPeakScore
+        if !hasRealMotion {
+            return MotionValidation(
+                time: impactTime,
+                motionProfile: profile,
+                peakIntervalIndex: peakInterval,
+                peakRatio: ratio,
+                confirmed: false,
+                reason: "Almost no motion in window — likely camera-stationary noise"
+            )
         }
+
+        // Pre-check: leading-zero prefix → REJECT (clamped frames at
+        // video start).
+        let leadingZeros = profile.prefix(DetectionConstants.motionZeroPrefixCount).filter { $0 < DetectionConstants.motionZeroPrefixEpsilon }.count
+        if leadingZeros >= DetectionConstants.motionZeroPrefixCount {
+            return MotionValidation(
+                time: impactTime,
+                motionProfile: profile,
+                peakIntervalIndex: peakInterval,
+                peakRatio: ratio,
+                confirmed: false,
+                reason: "Impact at video start — no pre-impact frames to validate against"
+            )
+        }
+
+        // 4-criterion shape test (V3.13). ≥3-of-4 must pass to CONFIRM.
+        // Each criterion is a separate predicate so per-criterion logging
+        // can be added later without surgery on the orchestrator.
+        var failures: [String] = []
+        if !Self.hasLowPreMotionBaseline(profile) {
+            failures.append("pre-motion too high")
+        }
+        let dips = Self.rampDipCount(profile, peakIndex: peakIdxInProfile)
+        if !Self.hasNearMonotonicRampToPeak(profile, peakIndex: peakIdxInProfile) {
+            failures.append("non-monotonic ramp (\(dips) dips)")
+        }
+        if !Self.peakInsideSwingWindow(peakInterval: peakInterval) {
+            failures.append("peak at interval \(peakInterval) outside swing window")
+        }
+        if !Self.hasPostPeakDecay(profile, peakIndex: peakIdxInProfile) {
+            failures.append("post-peak motion exceeds peak")
+        }
+
+        let passes = 4 - failures.count
+        let confirmed = passes >= DetectionConstants.motionMinShapeCriteriaPassed
+        let reason = confirmed ? nil : "shape: " + failures.joined(separator: ", ")
 
         return MotionValidation(
             time: impactTime,
@@ -272,8 +329,8 @@ final class MotionValidator {
 
     private func extractGrayBytes(asset: AVURLAsset, at time: Double) async -> [UInt8]? {
         let generator = AVAssetImageGenerator(asset: asset)
-        generator.maximumSize = CGSize(width: Self.frameWidth,
-                                       height: Self.frameHeight)
+        generator.maximumSize = CGSize(width: DetectionConstants.motionFrameWidth,
+                                       height: DetectionConstants.motionFrameHeight)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 10)
         generator.requestedTimeToleranceAfter  = CMTime(value: 1, timescale: 10)
@@ -289,8 +346,8 @@ final class MotionValidator {
 
     /// Render a CGImage into a fixed-size grayscale UInt8 buffer.
     private func grayBytes(from image: CGImage) -> [UInt8]? {
-        let w = Self.frameWidth
-        let h = Self.frameHeight
+        let w = DetectionConstants.motionFrameWidth
+        let h = DetectionConstants.motionFrameHeight
         var bytes = [UInt8](repeating: 0, count: w * h)
         let colorSpace = CGColorSpaceCreateDeviceGray()
 
@@ -317,7 +374,7 @@ final class MotionValidator {
         let count = min(a.count, b.count)
         guard count > 0 else { return 0 }
         var changed = 0
-        let thresh = Self.pixelChangeThreshold
+        let thresh = DetectionConstants.motionPixelChangeThreshold
         for i in 0..<count {
             let diff = abs(Int(a[i]) - Int(b[i]))
             if diff > thresh { changed += 1 }
@@ -349,5 +406,69 @@ final class MotionValidator {
             verdict,
             reasonSuffix
         ))
+    }
+
+    // MARK: - Stats helpers
+
+    /// Median of a non-empty array of doubles. For even counts, returns
+    /// the average of the two middle values. Used by V3.9 peak/median
+    /// ratio in place of the unstable peak/min ratio.
+    // MARK: - Shape-test predicates (V3.13)
+
+    /// Criterion 1: profile[0] is below half of peak motion. Real
+    /// swings start from a relatively still address position; while
+    /// some pre-motion is allowed (windup, walking-into-position in
+    /// busy range footage), the first interval shouldn't be louder
+    /// than half the peak.
+    private static func hasLowPreMotionBaseline(_ profile: [Double]) -> Bool {
+        guard let first = profile.first, let max = profile.max() else { return false }
+        return first < DetectionConstants.motionMaxPreMotionFractionOfPeak * max
+    }
+
+    /// Criterion 2: from index 0 to the peak, allow at most
+    /// `motionMaxRampDips` windows where the value drops below the
+    /// previous one. Pure noise won't have this near-monotonic shape;
+    /// a swing will.
+    private static func hasNearMonotonicRampToPeak(_ profile: [Double], peakIndex: Int) -> Bool {
+        rampDipCount(profile, peakIndex: peakIndex) <= DetectionConstants.motionMaxRampDips
+    }
+
+    /// Helper for criterion 2 — surfaced separately so the failure
+    /// reason string can quote the exact dip count.
+    private static func rampDipCount(_ profile: [Double], peakIndex: Int) -> Int {
+        var dips = 0
+        if peakIndex >= 1 {
+            for i in 1...peakIndex where profile[i] < profile[i - 1] {
+                dips += 1
+            }
+        }
+        return dips
+    }
+
+    /// Criterion 3: 1-based peak interval is inside the configured
+    /// swing window. Peak should occur at or just before the audio
+    /// impact, not at the very start of the analysis window.
+    private static func peakInsideSwingWindow(peakInterval: Int) -> Bool {
+        DetectionConstants.motionAcceptablePeakIntervals.contains(peakInterval)
+    }
+
+    /// Criterion 4: if the peak isn't in the final interval, motion
+    /// has decayed by the end of the window. Vacuous when the peak
+    /// IS the last interval (follow-through-dominant profiles).
+    private static func hasPostPeakDecay(_ profile: [Double], peakIndex: Int) -> Bool {
+        let isLastInterval = peakIndex == profile.count - 1
+        if isLastInterval { return true }
+        guard let last = profile.last else { return true }
+        return last < profile[peakIndex]
+    }
+
+    private static func median(of values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let n = sorted.count
+        if n % 2 == 1 {
+            return sorted[n / 2]
+        }
+        return (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     }
 }
