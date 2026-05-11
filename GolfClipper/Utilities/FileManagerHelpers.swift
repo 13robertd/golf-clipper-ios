@@ -16,7 +16,7 @@ enum FileManagerHelpers {
     static let videosFolderName = "ImportedVideos"
     static let clipsFolderName = "Clips"
     static let thumbnailsFolderName = "Thumbnails"
-    static let poseSpikeFolderName = "pose_spike"   // V4.3 research spike
+    static let swingStillsFolderName = "swing_stills"   // V1 — Generate Swing Stills feature
 
     static var videosFolderURL: URL {
         ensureFolder(named: videosFolderName)
@@ -30,13 +30,13 @@ enum FileManagerHelpers {
         ensureFolder(named: thumbnailsFolderName)
     }
 
-    /// V4.3 — Per-video output directory for the Phase 1 pose detection
-    /// spike. Holds the four annotated JPEG stills (p1/p4/p7/p8) so the
-    /// user can inspect Vision's per-position frame picks visually.
-    /// DEBUG-only consumer (SourceVideoPreviewView's "Run Pose Spike").
-    static func poseSpikeFolderURL(forVideoFilename filename: String) -> URL {
+    /// V1 — Per-source-video output directory for the Generate Swing
+    /// Stills feature. Holds two clean JPEG stills per clip (p4 = Top of
+    /// Backswing, p7 = Impact) for the user to AirDrop / save to Photos.
+    /// Consumer: SourceVideoPreviewView's "Generate Swing Stills" button.
+    static func swingStillsFolderURL(forVideoFilename filename: String) -> URL {
         let safeName = filename.replacingOccurrences(of: "/", with: "_")
-        let base = ensureFolder(named: poseSpikeFolderName)
+        let base = ensureFolder(named: swingStillsFolderName)
         let url = base.appendingPathComponent(safeName, isDirectory: true)
         if !FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

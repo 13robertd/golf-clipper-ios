@@ -1,25 +1,30 @@
 // PoseAnalyzer.swift
 //
-// V4.3 — Phase 1 research spike. NOT a production feature.
-// Iteration 3: P8 replaced with P10 (Finish Position). P10 is the
-// "trophy pose" at the end of the swing — easier to detect than P8
-// because it has a clean stillness signal (mirror of P1).
+// MARK: - Swing Stills (V1)
 //
-// Detects candidate frames for four P-positions per clip:
-//   • P1  — Address (earliest pre-swing stillness in first 1.5s)
-//   • P4  — Top of Backswing (90%-max wrist height with ascending-before /
-//           descending-after directional context)
-//   • P7  — Impact (caller-supplied within-clip timestamp from audio detect)
-//   • P10 — Finish (earliest post-swing stillness in last 1.5s, or
-//           shorter window for end-of-source clips)
+// Generates two stills per swing clip:
+//   - P4 (Top of Backswing): height + directional rule, reliable
+//   - P7 (Impact): audio-driven, reliable
 //
-// Output: four annotated JPEG stills written into the caller-supplied
-// directory + structured [NiceShot] logs.
+// P1 (Address) and P10 (Finish) detection code is retained in this file
+// but not called from analyzeSwing. Iterations 1-3 of the spike confirmed
+// these positions are unreliable in real-world conditions:
+//   - P1: lead wrist occluded by club shaft at address drops Vision
+//         confidence below the 0.3 floor
+//   - P10: stillness signal cannot distinguish "held finish" from "walking
+//         off" or "weight shift"
 //
-// Hard rule: production pipeline is untouched. This file is a leaf —
-// reads a clip URL + impact timestamp + output directory, writes JPEGs.
+// To re-enable in V1.1: uncomment the detectP1/detectP10 calls in
+// analyzeSwing and add the corresponding entries to stillsToSave. The
+// manual editor (planned for V1) will provide an override path for any
+// imperfect auto-detection.
 //
-// Assumptions (documented for the spike report):
+// Open issues (not blockers for V1):
+//   - Body detection nondeterminism: same source video produced 50/51 vs
+//     19/51 usable frames on consecutive runs. TODO marker at bbox
+//     selection logic.
+//
+// Assumptions:
 //   • Right-handed golfer: lead = anatomical left side.
 //   • Multi-person frames pick the observation with the largest bbox.
 //   • Sample rate 10 Hz (100ms grid).
@@ -122,38 +127,43 @@ final class PoseAnalyzer {
         // by review of detector code paths).
         let endSec = clipDuration
 
-        print(String(format: "[NiceShot] PoseSpike: clip duration %.2fs, impact at %.2fs within clip",
+        print(String(format: "[NiceShot] SwingStills: clip duration %.2fs, impact at %.2fs within clip",
                      clipDuration, impactTimeInClip))
 
         let samples = try await extractPoseSamples(asset: asset, from: 0.0, to: endSec)
 
         let usable = samples.filter { $0.isUsable }
         let usablePct = samples.isEmpty ? 0 : Int(Double(usable.count) / Double(samples.count) * 100)
-        print("[NiceShot] PoseSpike: usable frames \(usable.count)/\(samples.count) (\(usablePct)%)")
+        print("[NiceShot] SwingStills: usable frames \(usable.count)/\(samples.count) (\(usablePct)%)")
 
         let multiPersonCount = samples.filter { $0.observationCount > 1 }.count
         if multiPersonCount > 0 {
-            print("[NiceShot] PoseSpike: multi-person on \(multiPersonCount) frame(s) — largest bbox selected each time")
+            print("[NiceShot] SwingStills: multi-person on \(multiPersonCount) frame(s) — largest bbox selected each time")
         }
 
-        let p1 = detectP1(samples: samples, clipDuration: clipDuration)
+        // V1 — only P4 and P7 are detected. P1/P10 calls retained below
+        // (commented) for V1.1 re-enable; the detector methods themselves
+        // and the P1 diagnostic logger remain intact in this file.
+        // let p1 = detectP1(samples: samples, clipDuration: clipDuration)
+        let p1: PoseFrameCandidate? = nil
         let p4 = detectP4(samples: samples,
-                          p1Time: p1?.timestamp ?? 0,
+                          p1Time: 0,
                           p7Time: impactTimeInClip)
         let p7 = makeP7(samples: samples, time: impactTimeInClip)
-        let p10 = detectP10(samples: samples,
-                            p7Time: impactTimeInClip,
-                            clipDuration: clipDuration)
+        // let p10 = detectP10(samples: samples,
+        //                     p7Time: impactTimeInClip,
+        //                     clipDuration: clipDuration)
+        let p10: PoseFrameCandidate? = nil
 
-        for (name, candidate) in [("P1", p1), ("P4", p4), ("P10", p10)] {
+        for (name, candidate) in [("P4", p4)] {
             if let c = candidate {
-                print(String(format: "[NiceShot] PoseSpike: %@ candidate at %.2fs within clip (confidence %.2f, reasoning: %@)",
+                print(String(format: "[NiceShot] SwingStills: %@ candidate at %.2fs within clip (confidence %.2f, reasoning: %@)",
                              name, c.timestamp, c.confidence, c.reasoning))
             } else {
-                print("[NiceShot] PoseSpike: \(name) candidate: NONE (no usable frames in window)")
+                print("[NiceShot] SwingStills: \(name) candidate: NONE (no usable frames in window)")
             }
         }
-        print(String(format: "[NiceShot] PoseSpike: P7 at %.2fs (impact center)", impactTimeInClip))
+        print(String(format: "[NiceShot] SwingStills: P7 at %.2fs (impact center)", impactTimeInClip))
 
         // Caller controls the output directory (see SourceVideoPreviewView).
         // Make sure it exists; caller already creates it but defending against
@@ -163,7 +173,7 @@ final class PoseAnalyzer {
 
         var savedURLs: [URL] = []
         let stillsToSave: [(label: String, candidate: PoseFrameCandidate?)] = [
-            ("p1", p1), ("p4", p4), ("p7", p7), ("p10", p10)
+            ("p4", p4), ("p7", p7)
         ]
         for entry in stillsToSave {
             guard let c = entry.candidate else { continue }
@@ -173,18 +183,18 @@ final class PoseAnalyzer {
                 try await saveAnnotatedStill(
                     asset: asset,
                     time: c.timestamp,
-                    label: stillLabel(for: entry.label, candidate: c),
+                    label: entry.label,
                     sample: sample,
                     to: url
                 )
                 savedURLs.append(url)
             } catch {
-                print("[NiceShot] PoseSpike: failed to save \(entry.label) still: \(error.localizedDescription)")
+                print("[NiceShot] SwingStills: failed to save \(entry.label) still: \(error.localizedDescription)")
             }
         }
 
         let elapsed = Date().timeIntervalSince(started)
-        print(String(format: "[NiceShot] PoseSpike: clip analysis: %d frames in %.1fs",
+        print(String(format: "[NiceShot] SwingStills: clip analysis: %d frames in %.1fs",
                      samples.count, elapsed))
 
         return PoseDetectionResult(
@@ -249,11 +259,11 @@ final class PoseAnalyzer {
                 let sizes = withBoxes
                     .map { String(format: "%.3f×%.3f", $0.1.width, $0.1.height) }
                     .joined(separator: ", ")
-                print(String(format: "[NiceShot] PoseSpike: t=%.2fs multi-person (%d): picked %.3f×%.3f from [%@]",
+                print(String(format: "[NiceShot] SwingStills: t=%.2fs multi-person (%d): picked %.3f×%.3f from [%@]",
                              time, observations.count, selected.1.width, selected.1.height, sizes))
                 multiPersonLogged += 1
                 if multiPersonLogged == maxMultiPersonLogs {
-                    print("[NiceShot] PoseSpike: (further multi-person frames suppressed from log)")
+                    print("[NiceShot] SwingStills: (further multi-person frames suppressed from log)")
                 }
             }
 
@@ -379,7 +389,7 @@ final class PoseAnalyzer {
         }
 
         let minFrame = perFrame.min { $0.stddev < $1.stddev }!
-        print(String(format: "[NiceShot] PoseSpike: P1 fallback: no stillness threshold met, using minimum stddev = %.4f at %.2fs",
+        print(String(format: "[NiceShot] SwingStills: P1 fallback: no stillness threshold met, using minimum stddev = %.4f at %.2fs",
                      minFrame.stddev, minFrame.sample.timestamp))
         return PoseFrameCandidate(
             timestamp: minFrame.sample.timestamp,
@@ -440,13 +450,13 @@ final class PoseAnalyzer {
             if allPass { allThreePasses += 1 }
         }
 
-        print(String(format: "[NiceShot] PoseSpike: P1 diagnosis — search window [0.00s, %.2fs], %d sample slots (%@)",
+        print(String(format: "[NiceShot] SwingStills: P1 diagnosis — search window [0.00s, %.2fs], %d sample slots (%@)",
                      windowEnd, slotCount, reason))
-        print("[NiceShot] PoseSpike: P1 diagnosis — frames with body detected: \(bodyDetected)/\(slotCount)")
-        print("[NiceShot] PoseSpike: P1 diagnosis — frames passing wrist+shoulder conf 0.3: \(wristShoulderPass)/\(slotCount)")
-        print("[NiceShot] PoseSpike: P1 diagnosis — frames with hip conf >= 0.3: \(hipPass)/\(slotCount)")
-        print("[NiceShot] PoseSpike: P1 diagnosis — 300ms windows where anchor frame passes filter: \(anchorPasses)/\(totalWindows)")
-        print("[NiceShot] PoseSpike: P1 diagnosis — 300ms windows where all 3 frames pass filter: \(allThreePasses)/\(totalWindows)")
+        print("[NiceShot] SwingStills: P1 diagnosis — frames with body detected: \(bodyDetected)/\(slotCount)")
+        print("[NiceShot] SwingStills: P1 diagnosis — frames passing wrist+shoulder conf 0.3: \(wristShoulderPass)/\(slotCount)")
+        print("[NiceShot] SwingStills: P1 diagnosis — frames with hip conf >= 0.3: \(hipPass)/\(slotCount)")
+        print("[NiceShot] SwingStills: P1 diagnosis — 300ms windows where anchor frame passes filter: \(anchorPasses)/\(totalWindows)")
+        print("[NiceShot] SwingStills: P1 diagnosis — 300ms windows where all 3 frames pass filter: \(allThreePasses)/\(totalWindows)")
     }
 
     // MARK: - P4 detector (iteration 2 rewrite)
@@ -491,7 +501,7 @@ final class PoseAnalyzer {
             // Fallback A: no frame at 90% max in search window. Use max-Y.
             let topByY = searchUsable.max(by: { $0.y < $1.y })!
             let pct = topByY.y / maxPreImpactY * 100
-            print(String(format: "[NiceShot] PoseSpike: P4 fallback: no frame at 90%% max wrist height in search window, using max-Y at %.2fs",
+            print(String(format: "[NiceShot] SwingStills: P4 fallback: no frame at 90%% max wrist height in search window, using max-Y at %.2fs",
                          topByY.sample.timestamp))
             return PoseFrameCandidate(
                 timestamp: topByY.sample.timestamp,
@@ -527,7 +537,7 @@ final class PoseAnalyzer {
             // directional context. Use earliest height candidate.
             let earliest = heightCandidates.min(by: { $0.sample.timestamp < $1.sample.timestamp })!
             let pct = earliest.y / maxPreImpactY * 100
-            print(String(format: "[NiceShot] PoseSpike: P4 fallback: no frame with proper directional context, using earliest height candidate at %.2fs",
+            print(String(format: "[NiceShot] SwingStills: P4 fallback: no frame with proper directional context, using earliest height candidate at %.2fs",
                          earliest.sample.timestamp))
             return PoseFrameCandidate(
                 timestamp: earliest.sample.timestamp,
@@ -578,7 +588,7 @@ final class PoseAnalyzer {
                            clipDuration: TimeInterval) -> PoseFrameCandidate? {
         let postImpactLength = clipDuration - p7Time
         if postImpactLength < p10MinPostImpactSeconds {
-            print(String(format: "[NiceShot] PoseSpike: P10 unavailable - post-impact window too short (%.2fs)",
+            print(String(format: "[NiceShot] SwingStills: P10 unavailable - post-impact window too short (%.2fs)",
                          postImpactLength))
             return nil
         }
@@ -591,7 +601,7 @@ final class PoseAnalyzer {
             let lastSample = samples.last { $0.isUsable }
             let ts = lastSample?.timestamp ?? max(clipDuration - 0.01, p7Time)
             let conf = lastSample?.joints[leadWristJoint]?.confidence ?? 0
-            print(String(format: "[NiceShot] PoseSpike: P10 fallback: post-impact window too short (%.2fs), using last frame at %.2fs",
+            print(String(format: "[NiceShot] SwingStills: P10 fallback: post-impact window too short (%.2fs), using last frame at %.2fs",
                          searchWindowLength, ts))
             return PoseFrameCandidate(
                 timestamp: ts,
@@ -636,7 +646,7 @@ final class PoseAnalyzer {
             let lastSample = samples.last { $0.isUsable }
             let ts = lastSample?.timestamp ?? max(clipDuration - 0.01, p7Time)
             let conf = lastSample?.joints[leadWristJoint]?.confidence ?? 0
-            print(String(format: "[NiceShot] PoseSpike: P10 fallback: no usable frames in search window, using last frame at %.2fs", ts))
+            print(String(format: "[NiceShot] SwingStills: P10 fallback: no usable frames in search window, using last frame at %.2fs", ts))
             return PoseFrameCandidate(
                 timestamp: ts,
                 confidence: conf,
@@ -654,7 +664,7 @@ final class PoseAnalyzer {
         }
 
         let minFrame = perFrame.min { $0.stddev < $1.stddev }!
-        print(String(format: "[NiceShot] PoseSpike: P10 fallback: no stillness threshold met, using minimum stddev = %.4f at %.2fs",
+        print(String(format: "[NiceShot] SwingStills: P10 fallback: no stillness threshold met, using minimum stddev = %.4f at %.2fs",
                      minFrame.stddev, minFrame.sample.timestamp))
         return PoseFrameCandidate(
             timestamp: minFrame.sample.timestamp,
@@ -680,6 +690,8 @@ final class PoseAnalyzer {
         samples.min { abs($0.timestamp - time) < abs($1.timestamp - time) }
     }
 
+    // Retained for future debugging / re-enabling annotated stills.
+    // Not called in V1.
     private func stillLabel(for label: String, candidate: PoseFrameCandidate) -> String {
         let positionName: String
         switch label {
@@ -705,14 +717,23 @@ final class PoseAnalyzer {
         generator.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 60)
         let (cgImage, _) = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 600))
 
-        let annotated = drawOverlay(on: cgImage, sample: sample, label: label)
-        guard let data = annotated.jpegData(compressionQuality: 0.85) else {
+        // V1 — output the original frame only. No joint dots, no bbox,
+        // no header label. Content creators want clean stills they can
+        // post directly. `label` and `sample` are unused here but kept
+        // on the signature so V1.1 can route through drawOverlay again
+        // by changing one line.
+        _ = label
+        _ = sample
+        let plain = UIImage(cgImage: cgImage)
+        guard let data = plain.jpegData(compressionQuality: 0.85) else {
             throw NSError(domain: "PoseAnalyzer", code: 4,
                           userInfo: [NSLocalizedDescriptionKey: "JPEG encoding failed"])
         }
         try data.write(to: url, options: .atomic)
     }
 
+    // Retained for future debugging / re-enabling annotated stills.
+    // Not called in V1.
     private func drawOverlay(on cgImage: CGImage, sample: PoseSample?, label: String) -> UIImage {
         let size = CGSize(width: cgImage.width, height: cgImage.height)
         let format = UIGraphicsImageRendererFormat()
@@ -790,6 +811,8 @@ final class PoseAnalyzer {
         }
     }
 
+    // Retained for future debugging / re-enabling annotated stills.
+    // Not called in V1.
     private func drawCenteredText(_ text: String,
                                   in rect: CGRect,
                                   fontSize: CGFloat,

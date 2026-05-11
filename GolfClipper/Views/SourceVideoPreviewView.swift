@@ -31,12 +31,10 @@ struct SourceVideoPreviewView: View {
     @State private var isReanalyzing = false
     @State private var modeSwitchPromptVisible = false
 
-    // V4.3 — DEBUG-only pose detection spike state.
-    #if DEBUG
-    @State private var isRunningPoseSpike = false
-    @State private var poseSpikeShareURLs: [URL] = []
-    @State private var poseSpikeSharePresented = false
-    #endif
+    // V1 — Generate Swing Stills feature state.
+    @State private var isGeneratingSwingStills = false
+    @State private var swingStillsShareURLs: [URL] = []
+    @State private var swingStillsSharePresented = false
 
     /// Whether the local imported file actually exists on disk. If the
     /// user manually deleted it (or the sandbox path drifted), we still
@@ -270,28 +268,26 @@ struct SourceVideoPreviewView: View {
             deleteOriginalControl
                 .padding(.top, 4)
 
-            #if DEBUG
-            poseSpikeButton
+            swingStillsButton
                 .padding(.top, 4)
-            #endif
         }
     }
 
-    #if DEBUG
-    /// V4.3 — Research-only "Run Pose Spike" trigger. Runs Apple Vision
-    /// pose detection on this video and shares the four annotated JPEG
-    /// stills via the system share sheet so the user can save them to
-    /// Photos / Files / AirDrop for ground-truth inspection. Never
-    /// shipped — gated behind `#if DEBUG` so RELEASE builds drop it.
-    private var poseSpikeButton: some View {
+    /// V1 — "Generate Swing Stills" trigger. Runs Apple Vision pose
+    /// detection on every clip for this source video and shares the
+    /// resulting P4 (Top of Backswing) and P7 (Impact) JPEG stills via
+    /// the system share sheet so the user can save them to Photos /
+    /// Files / AirDrop. P1 (Address) and P10 (Finish) are intentionally
+    /// not generated in V1 — see header comment in PoseAnalyzer.swift.
+    private var swingStillsButton: some View {
         Button {
-            Task { await runPoseSpike() }
+            Task { await generateSwingStills() }
         } label: {
-            if isRunningPoseSpike {
+            if isGeneratingSwingStills {
                 ProgressView()
                     .frame(maxWidth: .infinity)
             } else {
-                Label("Run Pose Spike (DEBUG)", systemImage: "figure.golf")
+                Label("Generate Swing Stills", systemImage: "figure.golf")
                     .frame(maxWidth: .infinity)
             }
         }
@@ -299,35 +295,35 @@ struct SourceVideoPreviewView: View {
         .background(Color(.tertiarySystemBackground))
         .foregroundStyle(.secondary)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .disabled(isRunningPoseSpike)
-        .sheet(isPresented: $poseSpikeSharePresented) {
-            PoseSpikeShareSheet(items: poseSpikeShareURLs)
+        .disabled(isGeneratingSwingStills)
+        .sheet(isPresented: $swingStillsSharePresented) {
+            SwingStillsShareSheet(items: swingStillsShareURLs)
         }
     }
 
-    /// V4.3 iteration 2: loop through every clip for this source video,
-    /// run the pose analyzer on each one (operating on the EXPORTED CLIP
-    /// rather than the source video), and accumulate the per-clip JPEGs
-    /// into a single share sheet at the end. Per-clip output lives in
-    /// `Documents/pose_spike/<source filename>/clip_<impactSec>s_<UUID prefix>/`.
+    /// Loop through every clip for this source video, run the pose
+    /// analyzer on each one (operating on the EXPORTED CLIP rather than
+    /// the source video), and accumulate the per-clip JPEGs into a
+    /// single share sheet at the end. Per-clip output lives in
+    /// `Documents/swing_stills/<source filename>/clip_<impactSec>s_<UUID prefix>/`.
     /// The UUID prefix prevents two clips with the same rounded impact
     /// timestamp from overwriting each other's stills.
-    private func runPoseSpike() async {
-        isRunningPoseSpike = true
-        defer { isRunningPoseSpike = false }
+    private func generateSwingStills() async {
+        isGeneratingSwingStills = true
+        defer { isGeneratingSwingStills = false }
 
         let clips = app.clips
             .filter { $0.sourceVideoId == video.id }
             .sorted { $0.impactTimestamp < $1.impactTimestamp }
 
         guard !clips.isEmpty else {
-            print("[NiceShot] PoseSpike: no clips to analyze for \(video.displayName)")
+            print("[NiceShot] SwingStills: no clips to analyze for \(video.displayName)")
             return
         }
 
-        print("[NiceShot] PoseSpike: starting batch of \(clips.count) clip(s) for \(video.displayName)")
+        print("[NiceShot] SwingStills: starting batch of \(clips.count) clip(s) for \(video.displayName)")
 
-        let sourceDir = FileManagerHelpers.poseSpikeFolderURL(forVideoFilename: video.originalFilename)
+        let sourceDir = FileManagerHelpers.swingStillsFolderURL(forVideoFilename: video.originalFilename)
         var allURLs: [URL] = []
 
         for clip in clips {
@@ -337,7 +333,7 @@ struct SourceVideoPreviewView: View {
             try? FileManager.default.createDirectory(at: clipDir, withIntermediateDirectories: true)
 
             let impactInClip = clip.impactTimestamp - clip.startTime
-            print(String(format: "[NiceShot] PoseSpike: analyzing clip at %.2fs of %@",
+            print(String(format: "[NiceShot] SwingStills: analyzing clip at %.2fs of %@",
                          clip.impactTimestamp, video.displayName))
 
             do {
@@ -348,20 +344,19 @@ struct SourceVideoPreviewView: View {
                 )
                 allURLs.append(contentsOf: result.savedStillURLs)
             } catch {
-                print("[NiceShot] PoseSpike: clip analysis failed for \(clip.id): \(error.localizedDescription)")
+                print("[NiceShot] SwingStills: clip analysis failed for \(clip.id): \(error.localizedDescription)")
                 continue
             }
         }
 
-        print("[NiceShot] PoseSpike: completed \(clips.count) clip(s) for \(video.displayName)")
-        print("[NiceShot] PoseSpike: saved stills to \(sourceDir.path)")
+        print("[NiceShot] SwingStills: completed \(clips.count) clip(s) for \(video.displayName)")
+        print("[NiceShot] SwingStills: saved stills to \(sourceDir.path)")
 
-        poseSpikeShareURLs = allURLs
+        swingStillsShareURLs = allURLs
         if !allURLs.isEmpty {
-            poseSpikeSharePresented = true
+            swingStillsSharePresented = true
         }
     }
-    #endif
 
     /// Tier 3 control. If the original is already gone we collapse to a
     /// disabled status line — the action wouldn't do anything and a
@@ -410,17 +405,15 @@ struct SourceVideoPreviewView: View {
     }
 }
 
-// MARK: - V4.3 Pose Spike share sheet (DEBUG)
+// MARK: - V1 Swing Stills share sheet
 
-#if DEBUG
 /// Thin UIViewControllerRepresentable wrapping UIActivityViewController so
-/// the spike's JPEG URLs can be AirDropped / saved to Photos / saved to
-/// Files. Used only by the DEBUG "Run Pose Spike" button.
-private struct PoseSpikeShareSheet: UIViewControllerRepresentable {
+/// the swing-stills JPEG URLs can be AirDropped / saved to Photos / saved
+/// to Files. Used by the "Generate Swing Stills" button.
+private struct SwingStillsShareSheet: UIViewControllerRepresentable {
     let items: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
-#endif
