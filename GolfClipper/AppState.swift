@@ -132,6 +132,35 @@ final class AppState: ObservableObject {
         // The cleanup banner needs the size to motivate ("free up 248 MB"),
         // so we read it lazily from disk on first launch after upgrade.
         backfillMissingFileSizes()
+
+        // V4.1 — configure the audio session ONCE at app launch.
+        // Default is .soloAmbient which respects the silent switch and
+        // is wrong for a video-playback app; users expect tapping a clip
+        // to produce sound regardless of the ringer switch. .playback +
+        // .moviePlayback is Apple's recommended pairing for a video
+        // player. Configuring here rather than in each player view
+        // keeps the session in a single known state for the app's
+        // lifetime — VideoPlayer instances inherit it automatically.
+        Self.configureAudioSession()
+    }
+
+    /// V4.1 — One-time AVAudioSession setup. .playback ignores the
+    /// silent switch (correct for explicit video playback) and pauses
+    /// other audio while ours plays. Background-audio entitlements are
+    /// intentionally NOT set, so iOS suspends playback when the app
+    /// backgrounds — matches the spec ("Background the app → audio stops").
+    private static func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            try session.setActive(true)
+            print("[NiceShot] AVAudioSession configured: .playback / .moviePlayback (active)")
+        } catch {
+            // Simulators occasionally refuse activation; don't crash.
+            // On a real device the failure is rare; surface in logs and
+            // playback will fall back to whatever category iOS defaults to.
+            print("[NiceShot] AVAudioSession setup failed: \(error.localizedDescription)")
+        }
     }
 
     private func backfillMissingFileSizes() {
@@ -595,6 +624,16 @@ final class AppState: ObservableObject {
     ///   • <15s videos that still produce zero clips: fall back to the
     ///     single loudest audio moment, even if it never crossed
     ///     threshold. Better one questionable clip than nothing.
+    ///
+    /// V4.1 — mode selection. Each video runs under one of two
+    /// `DetectionMode` tunings:
+    ///   • `singleSwing`: 2.0s min-spacing, loudest-peak fallback on any
+    ///     duration. Defaulted for videos shorter than 30s.
+    ///   • `rangeSession`: 6.0s min-spacing, loudest-peak fallback only
+    ///     on <15s videos. Defaulted for videos ≥30s.
+    /// The auto-detected mode is persisted on the ImportedVideo on the
+    /// first run so future heuristic changes don't silently shift
+    /// behavior. The user can override via the chip on the results UI.
     private func processVideo(_ video: ImportedVideo,
                               progress: @escaping (VideoProcessingStatus) -> Void) async -> VideoOutcome {
         // 1. Audio check. (No audio = nothing for the detector to do.)
@@ -602,11 +641,21 @@ final class AppState: ObservableObject {
         let hasAudio = await importer.videoHasAudioTrack(video)
         if !hasAudio { return .noAudio }
 
-        // V3.8 — derive an effective settings struct that respects the
-        // user's preset/multiplier choices but loosens min-spacing for
-        // short clips. The user-visible setting in Settings/Debug is
-        // unchanged; this is purely a per-video adjustment.
-        let effectiveSettings = adjustedSettings(for: video, base: settings)
+        // V4.1 — Resolve mode. Prefer the persisted value; only fall back
+        // to auto-detect if this is the first time we've processed the
+        // video (or it was imported pre-V4.1). Persist back the choice
+        // immediately so subsequent reads (UI chip, reanalyze) see it.
+        let mode = video.detectionMode ?? DetectionMode.autoDetect(forDuration: video.duration)
+        if video.detectionMode == nil {
+            updateVideoMode(id: video.id, mode: mode)
+        }
+        print("[NiceShot] Detection mode: \(mode.rawValue) (duration \(String(format: "%.1f", video.duration))s, \(video.detectionMode == nil ? "auto-detected" : "persisted"))")
+
+        // V3.8 + V4.1 — derive effective settings. Mode overrides the
+        // user's min-spacing; the V3.8 short-video clamp still applies on
+        // top. Audio multiplier is unchanged (user's preset/override
+        // still wins; modes don't differ on threshold).
+        let effectiveSettings = adjustedSettings(for: video, base: settings, mode: mode)
 
         // 2. Run impact detection.
         progress(.detectingShots)
@@ -675,7 +724,7 @@ final class AppState: ObservableObject {
         }
         let dominantTime = Self.findDominantAudioPeak(
             among: candidatesForDominance,
-            multiplier: DetectionConstants.dominanceMultiplier
+            multiplier: mode.values.dominanceMultiplier
         )
 
         // Build the non-dominant survivor list for motion validation.
@@ -729,15 +778,19 @@ final class AppState: ObservableObject {
             timestampsToExport.sort()
         }
 
-        // V3.8 — short-video fallback. If the whole pipeline produced
-        // nothing AND the video is short enough that "user filmed one
-        // swing on purpose" is the dominant case, take the loudest audio
-        // moment regardless of threshold.
+        // V3.8 + V4.1 — loudest-peak fallback. Originally gated on
+        // <15s ("user filmed one swing on purpose"); singleSwing mode
+        // extends the same safety net to any duration so a 90s recording
+        // of one quiet swing isn't silently dropped. rangeSession keeps
+        // the short-only gate — long range videos with zero confirmed
+        // swings genuinely have no swings, not a missed loudest peak.
+        let canApplyLoudestFallback = mode.values.alwaysApplyLoudestFallback || isShortVideo
         var fallbackUsed = false
         if timestampsToExport.isEmpty,
-           isShortVideo,
+           canApplyLoudestFallback,
            let loudest = result.loudestWindowTime {
-            print(String(format: "[NiceShot] Fallback: using loudest peak at %.2fs for short video", loudest))
+            let why = mode.values.alwaysApplyLoudestFallback ? "singleSwing mode" : "short video"
+            print(String(format: "[NiceShot] Fallback: using loudest peak at %.2fs (%@)", loudest, why))
             timestampsToExport = [loudest]
             fallbackUsed = true
         }
@@ -751,6 +804,34 @@ final class AppState: ObservableObject {
                                  finalClips: 0,
                                  fallback: false)
             return .noShots
+        }
+
+        // V4.2 — singleSwing top-1 filter. The mode name promises one
+        // clip; min-spacing alone doesn't deliver when three peaks are
+        // spaced >2s apart and all pass motion. Final gate ranks the
+        // survivors and keeps only the highest-confidence one:
+        //   1. The auto-confirmed dominant peak, if one is in the set
+        //      (≥2× next strongest — the algorithm's most confident verdict).
+        //   2. Otherwise, the candidate with the highest audio energy
+        //      ratio (loudest impact relative to its surrounding noise).
+        // No-op when keepTopCandidateOnly is false (rangeSession), so
+        // multi-swing behavior stays bit-identical.
+        if mode.values.keepTopCandidateOnly && timestampsToExport.count > 1 {
+            let originalCount = timestampsToExport.count
+            let kept: Double
+            if let dt = dominantTime,
+               timestampsToExport.contains(where: { abs($0 - dt) < 0.5 }) {
+                kept = dt
+            } else {
+                kept = timestampsToExport.max(by: { lhs, rhs in
+                    Self.energyRatio(forTime: lhs, in: result.candidates)
+                        < Self.energyRatio(forTime: rhs, in: result.candidates)
+                }) ?? timestampsToExport[0]
+            }
+            let keptRatio = Self.energyRatio(forTime: kept, in: result.candidates)
+            print(String(format: "[NiceShot] singleSwing top-1 filter: kept %.2fs (%.2fx audio ratio), dropped %d other candidates",
+                         kept, keptRatio, originalCount - 1))
+            timestampsToExport = [kept]
         }
 
         // 4. Export clips. Per-clip progress drives "Creating clip N of M…"
@@ -795,6 +876,16 @@ final class AppState: ObservableObject {
         return .success(clipsAdded: withThumbs.count)
     }
 
+    /// V4.2 — Look up the energy ratio for a given timestamp from the
+    /// candidates list, with a 50ms tolerance to absorb sub-window
+    /// rounding. Returns 0 when no candidate matches (shouldn't happen
+    /// for confirmed timestamps, but defensive against the loudest-peak
+    /// fallback's window time which isn't in the candidate set).
+    private static func energyRatio(forTime time: Double,
+                                    in candidates: [ImpactCandidate]) -> Double {
+        candidates.first(where: { abs($0.time - time) < 0.05 })?.energyRatio ?? 0
+    }
+
     /// V3.10 / V3.12 — Find the audio peak whose energy ratio is at
     /// least `multiplier` times higher than every other candidate in
     /// the input set. Returns nil when there's no clear standout.
@@ -833,23 +924,33 @@ final class AppState: ObservableObject {
         return isDominant ? strongest.time : nil
     }
 
-    /// V3.8 — for videos under
-    /// `DetectionConstants.shortVideoSpacingThresholdSeconds`, force
-    /// min-spacing down to `shortVideoMinSpacingSeconds` so a short
-    /// recording with two real peaks (e.g. mishit + reset whack) doesn't
-    /// lose the second one to the default 6.0s cooldown.
+    /// V3.8 + V4.1 — Per-video derived settings.
+    /// 1. Mode picks the base min-spacing (singleSwing 2.0s, rangeSession 6.0s).
+    /// 2. V3.8 short-video clamp still applies on top: <30s videos get
+    ///    `shortVideoMinSpacingSeconds` if it would tighten further.
+    /// User-visible Settings/Debug values are unchanged; mode and the
+    /// short-video clamp are pipeline-internal adjustments.
     ///
     // TODO: bug — min-spacing precision. Real candidate at 16.32s
     // (4.46×) was eliminated by 17.26s (4.88×) only 0.94s apart in
     // IMG_2253. The current 6.0s minimum may be too aggressive for
     // fast-paced range sessions where consecutive swings happen 1–3s
-    // apart. Consider tying min-spacing to detected video tempo or
-    // exposing it per-mode in the future config system.
+    // apart. Consider tying min-spacing to detected video tempo.
+    //
+    // V4.1 watch — singleSwing's 2.0s min-spacing is more permissive
+    // than rangeSession's 6.0s. If a user overrides a video to
+    // singleSwing mode and that video has two close-spaced legitimate
+    // impacts (e.g. mishit + reset whack 3-5s apart), both will be
+    // emitted. Acceptable for V1 — the mode is explicitly "lenient
+    // toward catching" and the user has the chip to revert.
     private func adjustedSettings(for video: ImportedVideo,
-                                  base: DetectionSettings) -> DetectionSettings {
-        guard video.duration < DetectionConstants.shortVideoSpacingThresholdSeconds else { return base }
+                                  base: DetectionSettings,
+                                  mode: DetectionMode) -> DetectionSettings {
         var s = base
-        s.minimumSpacingSeconds = min(DetectionConstants.shortVideoMinSpacingSeconds, base.minimumSpacingSeconds)
+        s.minimumSpacingSeconds = mode.values.minSpacingSeconds
+        if video.duration < DetectionConstants.shortVideoSpacingThresholdSeconds {
+            s.minimumSpacingSeconds = min(DetectionConstants.shortVideoMinSpacingSeconds, s.minimumSpacingSeconds)
+        }
         return s
     }
 
@@ -1175,5 +1276,68 @@ final class AppState: ObservableObject {
         importedVideos[idx].wasOriginalDeletedFromPhotos = deleted
         importedVideos[idx].deletionErrorMessage = errorMessage
         storage.saveVideos(importedVideos)
+    }
+
+    /// V4.1 — persist the chosen DetectionMode on a video record. Called
+    /// once on the first processing pass (auto-detected mode), and again
+    /// whenever the user taps the override chip.
+    private func updateVideoMode(id: UUID, mode: DetectionMode) {
+        guard let idx = importedVideos.firstIndex(where: { $0.id == id }) else { return }
+        importedVideos[idx].detectionMode = mode
+        storage.saveVideos(importedVideos)
+    }
+
+    // MARK: - V4.1 — Per-video re-analyze (mode override)
+
+    /// Re-run the pipeline on a single video with a specific
+    /// DetectionMode, replacing its existing clips. Used by the
+    /// ClipReviewView / SourceVideoPreviewView mode chip.
+    ///
+    /// Behavior:
+    ///   1. Persist the new mode on the video record.
+    ///   2. Delete the video's existing clip files + records.
+    ///   3. Re-run `processVideo`, which now sees the persisted mode
+    ///      and runs the full pipeline under it.
+    ///
+    /// Audio decode + RMS dominate the cost (~few seconds even on long
+    /// videos thanks to vDSP). The rest of the batch is unaffected.
+    /// Caller is expected to disable the chip while this is in flight.
+    func reanalyzeVideo(_ video: ImportedVideo, mode: DetectionMode) async {
+        errorMessage = nil
+
+        updateVideoMode(id: video.id, mode: mode)
+
+        let oldClips = clips.filter { $0.sourceVideoId == video.id }
+        for clip in oldClips {
+            FileManagerHelpers.deleteFile(atRelativePath: clip.relativePath)
+            if let t = clip.thumbnailRelativePath {
+                FileManagerHelpers.deleteFile(atRelativePath: t)
+            }
+        }
+        clips.removeAll { $0.sourceVideoId == video.id }
+        storage.saveClips(clips)
+
+        updateVideoStatus(id: video.id, status: .pending, errorMessage: nil)
+
+        // Refetch — the local `video` snapshot doesn't have the
+        // freshly-persisted mode. processVideo reads detectionMode off
+        // the record, so it must be the updated copy.
+        guard let freshVideo = importedVideos.first(where: { $0.id == video.id }) else { return }
+
+        let outcome = await processVideo(freshVideo) { newStatus in
+            self.updateVideoStatus(id: video.id, status: newStatus, errorMessage: nil)
+        }
+
+        switch outcome {
+        case .success:
+            updateVideoStatus(id: video.id, status: .completed, errorMessage: nil)
+        case .noShots:
+            updateVideoStatus(id: video.id, status: .noShotsFound, errorMessage: nil)
+        case .noAudio:
+            updateVideoStatus(id: video.id, status: .noAudio, errorMessage: "No audio track")
+        case .failure(let err):
+            updateVideoStatus(id: video.id, status: .failed, errorMessage: err.localizedDescription)
+            errorMessage = err.localizedDescription
+        }
     }
 }

@@ -82,6 +82,14 @@ struct ImportedVideo: Identifiable, Codable, Hashable {
     /// missing sizes from disk on launch.
     var fileSizeBytes: Int64?
 
+    // V4.1 — detection-mode persistence.
+    /// Which DetectionMode tuning bundle was used to produce this video's
+    /// current clips. Written by `AppState.processVideo` on the first run
+    /// (auto-detected from duration) and overwritten by the chip's tap
+    /// action. Optional so legacy records (pre-V4.1) load with nil and
+    /// pick up an auto-detected mode on next processing pass.
+    var detectionMode: DetectionMode?
+
     var localFileURL: URL {
         FileManagerHelpers.documentsDirectory.appendingPathComponent(relativePath)
     }
@@ -97,7 +105,8 @@ struct ImportedVideo: Identifiable, Codable, Hashable {
          originalAssetIdentifier: String? = nil,
          wasOriginalDeletedFromPhotos: Bool = false,
          deletionErrorMessage: String? = nil,
-         fileSizeBytes: Int64? = nil) {
+         fileSizeBytes: Int64? = nil,
+         detectionMode: DetectionMode? = nil) {
         self.id = id
         self.originalFilename = originalFilename
         self.relativePath = relativePath
@@ -110,6 +119,7 @@ struct ImportedVideo: Identifiable, Codable, Hashable {
         self.wasOriginalDeletedFromPhotos = wasOriginalDeletedFromPhotos
         self.deletionErrorMessage = deletionErrorMessage
         self.fileSizeBytes = fileSizeBytes
+        self.detectionMode = detectionMode
     }
 
     /// Forgiving decoder: legacy records (V1 / V1.5 without deletion
@@ -130,5 +140,8 @@ struct ImportedVideo: Identifiable, Codable, Hashable {
         self.wasOriginalDeletedFromPhotos  = (try? c.decode(Bool.self, forKey: .wasOriginalDeletedFromPhotos)) ?? false
         self.deletionErrorMessage          = try? c.decode(String.self, forKey: .deletionErrorMessage)
         self.fileSizeBytes                 = try? c.decode(Int64.self, forKey: .fileSizeBytes)
+        // V4.1 — pre-V4.1 records have no detectionMode; nil here means
+        // "the next processing pass will auto-detect and persist."
+        self.detectionMode                 = try? c.decode(DetectionMode.self, forKey: .detectionMode)
     }
 }

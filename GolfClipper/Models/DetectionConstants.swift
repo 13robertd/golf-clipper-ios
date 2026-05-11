@@ -5,12 +5,12 @@
 // DetectionSettings; this file holds the algorithmic constants that
 // aren't user-facing and rarely change.
 //
-// The future "mode system" (range vs single-swing detection) will be
-// implemented by introducing additional `DetectionConstants` instances
-// (or a static `.rangeMode` / `.singleSwingMode` factory) and threading
-// the chosen instance through the pipeline. That refactor is out of
-// scope for this cleanup pass; the goal here is just consolidation so
-// the next change is a one-line swap, not a hunt across files.
+// V4.1 — mode system. Two named tuning bundles live alongside the
+// static algorithm constants: `singleSwingMode` and `rangeSessionMode`.
+// Modes affect only min-spacing and the loudest-peak fallback gate —
+// audio multiplier, motion criteria, and dominance threshold are shared.
+// The pipeline auto-selects a mode by video duration and persists the
+// choice on each ImportedVideo; the user can override via the UI chip.
 
 import Foundation
 
@@ -187,5 +187,132 @@ enum DetectionConstants {
         if verboseLogging {
             print(message())
         }
+    }
+
+    // MARK: - V4.1 mode tuning
+
+    /// Per-mode tuning bundle. Modes intentionally share the audio
+    /// multiplier, motion-shape criteria, and dominance multiplier —
+    /// only the two values below differ. Adding more knobs here is
+    /// the supported extension point if future modes need to diverge
+    /// further (e.g. a `quietShot` mode for chips/putts in V1.1).
+    struct ModeValues {
+        /// Min-spacing seconds applied during the audio "loudest wins"
+        /// cooldown. Overrides DetectionSettings.minimumSpacingSeconds
+        /// when the pipeline runs (the user-visible setting is left
+        /// alone). The V3.8 short-video clamp still applies on top.
+        let minSpacingSeconds: Double
+        /// Dominance multiplier passed to findDominantAudioPeak. Kept
+        /// per-mode (rather than always-constant) so a future mode
+        /// can tune this without touching DetectionConstants's other
+        /// static fields.
+        let dominanceMultiplier: Double
+        /// V3.8's loudest-peak fallback fires when the pipeline produces
+        /// zero clips AND the video is "short" (<15s). For singleSwing
+        /// mode we want that safety net regardless of duration — a
+        /// 90s recording of one quiet swing should not silently produce
+        /// no clips. For rangeSession we keep the short-only gate (a
+        /// long range video with zero confirmed swings genuinely has
+        /// no swings, not a missed loudest peak).
+        let alwaysApplyLoudestFallback: Bool
+        /// V4.2 — after the full pipeline runs, keep only the highest-
+        /// confidence surviving candidate. The mode's name promises a
+        /// single clip; min-spacing alone doesn't deliver that when
+        /// three audio peaks are 2.5s apart and all pass motion. Ranking
+        /// preference: auto-confirmed dominant peak first, then highest
+        /// audio energy ratio among motion-confirmed survivors.
+        let keepTopCandidateOnly: Bool
+    }
+
+    /// Tuning for a single deliberate swing (quiet environment, one shot).
+    /// Audio threshold matches rangeSession — IMG_1958's swing comes in
+    /// at 8.66× ratio against a 3.288× threshold, so the impact has a
+    /// huge margin against the standard 5.0× multiplier. Lowering the
+    /// multiplier would admit speculative extra candidates without
+    /// helping on the known test case.
+    static let singleSwingMode = ModeValues(
+        minSpacingSeconds: 2.0,
+        dominanceMultiplier: 2.0,
+        alwaysApplyLoudestFallback: true,
+        keepTopCandidateOnly: true
+    )
+
+    /// Tuning for a multi-swing range recording (noisy, multiple swings).
+    /// Matches the V3.7 production values; this mode is what the pipeline
+    /// has always done. Keeping these unchanged is what preserves the
+    /// IMG_2253 (5 clips) / IMG_2252 (11 clips) baselines.
+    static let rangeSessionMode = ModeValues(
+        minSpacingSeconds: 6.0,
+        dominanceMultiplier: 2.0,
+        alwaysApplyLoudestFallback: false,
+        keepTopCandidateOnly: false
+    )
+
+    /// Duration cutoff for auto-detect. Videos shorter than this default
+    /// to singleSwing; longer ones default to rangeSession. The chip is
+    /// the user's path to correct misclassifications in the 30–120s
+    /// ambiguous zone where duration alone can't distinguish.
+    static let modeAutoDetectDurationCutoffSeconds: Double = 30.0
+}
+
+/// V4.1 — Which tuning bundle a video uses. Persisted per-video in
+/// ImportedVideo; user can override via the chip on ClipReviewView or
+/// SourceVideoPreviewView. The auto-detect heuristic only runs on the
+/// first processing pass — the choice is persisted so future heuristic
+/// tweaks don't silently shift a video's behavior between launches.
+enum DetectionMode: String, Codable, Hashable, CaseIterable {
+    case singleSwing
+    case rangeSession
+
+    var values: DetectionConstants.ModeValues {
+        switch self {
+        case .singleSwing:  return DetectionConstants.singleSwingMode
+        case .rangeSession: return DetectionConstants.rangeSessionMode
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .singleSwing:  return "Single swing"
+        case .rangeSession: return "Range session"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .singleSwing:
+            return "Lenient filtering for single-swing videos."
+        case .rangeSession:
+            return "Stricter filtering for multi-swing range videos."
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .singleSwing:  return "figure.golf"
+        case .rangeSession: return "square.grid.3x3.fill"
+        }
+    }
+
+    /// The only other mode. Since V1 is exactly two modes, the chip's
+    /// tap action and the "switch back" empty-state CTA both target
+    /// `.opposite` — no separate "previous mode" needs to be tracked.
+    var opposite: DetectionMode {
+        switch self {
+        case .singleSwing:  return .rangeSession
+        case .rangeSession: return .singleSwing
+        }
+    }
+
+    /// V4.1 — Cheap duration-based auto-detect. The three test videos
+    /// classify cleanly: IMG_1958 (19.7s) → singleSwing; IMG_2253 (126s)
+    /// and IMG_2252 (226s) → rangeSession. The 30–120s zone is known to
+    /// misclassify single-swing videos with extra silence around them;
+    /// the chip is the V1 fix for that case.
+    static func autoDetect(forDuration duration: Double) -> DetectionMode {
+        if duration < DetectionConstants.modeAutoDetectDurationCutoffSeconds {
+            return .singleSwing
+        }
+        return .rangeSession
     }
 }

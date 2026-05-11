@@ -16,6 +16,7 @@ enum FileManagerHelpers {
     static let videosFolderName = "ImportedVideos"
     static let clipsFolderName = "Clips"
     static let thumbnailsFolderName = "Thumbnails"
+    static let poseSpikeFolderName = "pose_spike"   // V4.3 research spike
 
     static var videosFolderURL: URL {
         ensureFolder(named: videosFolderName)
@@ -27,6 +28,20 @@ enum FileManagerHelpers {
 
     static var thumbnailsFolderURL: URL {
         ensureFolder(named: thumbnailsFolderName)
+    }
+
+    /// V4.3 — Per-video output directory for the Phase 1 pose detection
+    /// spike. Holds the four annotated JPEG stills (p1/p4/p7/p8) so the
+    /// user can inspect Vision's per-position frame picks visually.
+    /// DEBUG-only consumer (SourceVideoPreviewView's "Run Pose Spike").
+    static func poseSpikeFolderURL(forVideoFilename filename: String) -> URL {
+        let safeName = filename.replacingOccurrences(of: "/", with: "_")
+        let base = ensureFolder(named: poseSpikeFolderName)
+        let url = base.appendingPathComponent(safeName, isDirectory: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return url
     }
 
     @discardableResult

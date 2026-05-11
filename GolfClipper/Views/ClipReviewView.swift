@@ -46,6 +46,31 @@ struct ClipReviewView: View {
     /// In-memory, view-local — does not survive sheet dismissal.
     @State private var recentlyDeleted: [UUID: RecentlyDeletedItem] = [:]
 
+    /// V4.1 — set of video IDs currently being re-analyzed via the mode
+    /// chip. The chip renders a spinner and disables tap while in-flight.
+    @State private var reanalyzingVideoIds: Set<UUID> = []
+
+    /// V4.1 — confirmation dialog presenter. Non-nil = dialog visible.
+    @State private var modeSwitchTarget: ModeSwitchPrompt?
+
+    /// V4.1 — post-reanalyze empty-state alert. Surfaces when a mode
+    /// switch produced zero clips so the user has an obvious one-tap
+    /// path back to the prior mode.
+    @State private var emptyAfterSwitch: EmptyAfterSwitch?
+
+    private struct ModeSwitchPrompt: Identifiable {
+        let video: ImportedVideo
+        let currentMode: DetectionMode
+        var id: UUID { video.id }
+    }
+
+    private struct EmptyAfterSwitch: Identifiable {
+        let video: ImportedVideo
+        /// The mode that was just applied (and produced zero clips).
+        let triedMode: DetectionMode
+        var id: UUID { video.id }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -70,6 +95,79 @@ struct ClipReviewView: View {
                                         set: { if !$0 { app.errorMessage = nil } })) {
                 Button("OK", role: .cancel) { app.errorMessage = nil }
             } message: { Text(app.errorMessage ?? "") }
+            // V4.1 — Mode override confirmation. Native confirmationDialog
+            // with the `presenting:` form so the action closures see the
+            // exact prompt the user tapped on (no stale captures).
+            .confirmationDialog(
+                modeSwitchTarget.map { "Switch to \($0.currentMode.opposite.displayName)?" } ?? "",
+                isPresented: Binding(
+                    get: { modeSwitchTarget != nil },
+                    set: { if !$0 { modeSwitchTarget = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: modeSwitchTarget
+            ) { prompt in
+                Button("Switch and Re-analyze", role: .destructive) {
+                    Task { await runReanalyze(video: prompt.video, mode: prompt.currentMode.opposite) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { prompt in
+                Text("\(prompt.currentMode.opposite.summary) Clips will be regenerated.")
+            }
+            // V4.1 — Empty-state revert alert. Fires when a mode switch
+            // produced zero clips. The one-tap "Switch back" path is the
+            // recovery affordance — without it the user can be stuck.
+            .alert(
+                emptyAfterSwitch.map { "No clips found in \($0.triedMode.displayName)" } ?? "",
+                isPresented: Binding(
+                    get: { emptyAfterSwitch != nil },
+                    set: { if !$0 { emptyAfterSwitch = nil } }
+                ),
+                presenting: emptyAfterSwitch
+            ) { context in
+                Button("Switch back to \(context.triedMode.opposite.displayName)") {
+                    Task { await runReanalyze(video: context.video, mode: context.triedMode.opposite) }
+                }
+                Button("Keep as is", role: .cancel) {}
+            } message: { context in
+                Text("\(context.triedMode.displayName) didn't find any swings in this video. Try the other mode?")
+            }
+        }
+    }
+
+    /// V4.1 — Per-video re-analyze flow. Tracks in-flight state for the
+    /// chip's spinner, kicks off the pipeline, and surfaces the empty-
+    /// state revert alert if the new mode produced zero clips.
+    ///
+    /// V4.2 — minimum visible spinner duration. Short-video reruns can
+    /// complete in <300ms; the spinner flashes too briefly to register
+    /// that work happened. Padding to a 600ms floor makes the state
+    /// transition perceptible without lying about the work being done.
+    private func runReanalyze(video: ImportedVideo, mode: DetectionMode) async {
+        reanalyzingVideoIds.insert(video.id)
+        let started = Date()
+        print("[NiceShot] Reanalyze: starting for \(video.displayName) in \(mode.rawValue) mode")
+
+        await app.reanalyzeVideo(video, mode: mode)
+
+        let elapsedMs = Date().timeIntervalSince(started) * 1000
+        let producedClipCount = app.clips.filter { $0.sourceVideoId == video.id }.count
+        print(String(format: "[NiceShot] Reanalyze: completed in %.0fms, produced %d clips",
+                     elapsedMs, producedClipCount))
+
+        let minVisibleMs: Double = 600
+        if elapsedMs < minVisibleMs {
+            let remainingNs = UInt64((minVisibleMs - elapsedMs) * 1_000_000)
+            try? await Task.sleep(nanoseconds: remainingNs)
+        }
+
+        reanalyzingVideoIds.remove(video.id)
+
+        if producedClipCount == 0 {
+            // Refetch in case the persisted record drifted; we want the
+            // most-recent state for the alert's display + revert action.
+            let fresh = app.importedVideos.first { $0.id == video.id } ?? video
+            emptyAfterSwitch = EmptyAfterSwitch(video: fresh, triedMode: mode)
         }
     }
 
@@ -219,6 +317,24 @@ struct ClipReviewView: View {
                         Image(systemName: "video.fill").foregroundStyle(.green)
                         Text(group.title)
                             .lineLimit(1)
+                        // V4.1 — mode chip lives between title and clip
+                        // count. Looks up the matching video so we can
+                        // render its current (persisted or auto-detected)
+                        // mode and tap into the confirmation flow.
+                        if let video = app.importedVideos.first(where: { $0.id == group.videoId }) {
+                            let resolvedMode = video.detectionMode
+                                ?? DetectionMode.autoDetect(forDuration: video.duration)
+                            ModeChip(
+                                mode: resolvedMode,
+                                isReanalyzing: reanalyzingVideoIds.contains(video.id),
+                                onTap: {
+                                    modeSwitchTarget = ModeSwitchPrompt(
+                                        video: video,
+                                        currentMode: resolvedMode
+                                    )
+                                }
+                            )
+                        }
                         Spacer()
                         Text("\(group.clips.count) clip\(group.clips.count == 1 ? "" : "s")")
                             .foregroundStyle(.secondary)

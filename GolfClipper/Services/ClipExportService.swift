@@ -99,7 +99,13 @@ final class ClipExportService {
             switch session.status {
             case .completed:
                 let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.intValue ?? 0
-                print("[NiceShot]   ✓ Export OK (\(preset)): \(fileSize) bytes")
+                // V4.1 — sanity-check that audio survived the export.
+                // Passthrough preserves audio when the source has it; this
+                // log catches the case where source audio was missing or
+                // a future preset change drops audio silently.
+                let exportedAsset = AVURLAsset(url: outputURL)
+                let audioTrackCount = (try? await exportedAsset.loadTracks(withMediaType: .audio).count) ?? 0
+                print("[NiceShot]   ✓ Export OK (\(preset)): \(fileSize) bytes, audio tracks: \(audioTrackCount)")
                 let clip = SwingClip(
                     id: clipId,
                     sourceVideoId: video.id,
